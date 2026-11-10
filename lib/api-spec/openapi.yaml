@@ -1,0 +1,278 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: Personal website content and private editing API
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: content
+    description: Public and private website content
+  - name: auth
+    description: Single-admin session
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /content:
+    get:
+      operationId: getPublicContent
+      tags: [content]
+      summary: Get published website content
+      responses:
+        "200":
+          description: Published site content
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteContent"
+  /auth/session:
+    get:
+      operationId: getAdminSession
+      tags: [auth]
+      summary: Check the current admin session
+      responses:
+        "200":
+          description: Session status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionStatus"
+  /auth/login:
+    post:
+      operationId: loginAdmin
+      tags: [auth]
+      summary: Sign in to the private editor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminLogin"
+      responses:
+        "200":
+          description: Signed-in session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionStatus"
+        "401":
+          description: Invalid credentials
+  /auth/logout:
+    post:
+      operationId: logoutAdmin
+      tags: [auth]
+      summary: Sign out of the private editor
+      responses:
+        "200":
+          description: Signed-out session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionStatus"
+  /admin/content:
+    get:
+      operationId: getAdminContent
+      tags: [content]
+      summary: Get all content for the private editor
+      responses:
+        "200":
+          description: Editable site content, including unpublished items
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteContent"
+        "401":
+          description: Admin session required
+    put:
+      operationId: updateAdminContent
+      tags: [content]
+      summary: Save all editable website content
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SiteContent"
+      responses:
+        "200":
+          description: Saved site content
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteContent"
+        "400":
+          description: Invalid content
+        "401":
+          description: Admin session required
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    SessionStatus:
+      type: object
+      properties:
+        authenticated:
+          type: boolean
+        email:
+          type: ["string", "null"]
+      required: [authenticated, email]
+    AdminLogin:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 1
+      required: [email, password]
+    JourneyItem:
+      type: object
+      properties:
+        age:
+          type: string
+        milestone:
+          type: string
+      required: [age, milestone]
+    SocialLink:
+      type: object
+      properties:
+        platform:
+          type: string
+        label:
+          type: string
+        href:
+          type: string
+      required: [platform, label, href]
+    ProfileContent:
+      type: object
+      properties:
+        name:
+          type: string
+        introduction:
+          type: string
+        journey:
+          type: array
+          items:
+            $ref: "#/components/schemas/JourneyItem"
+        interests:
+          type: array
+          items:
+            type: string
+        placesToFindMe:
+          type: array
+          items:
+            $ref: "#/components/schemas/SocialLink"
+      required: [name, introduction, journey, interests, placesToFindMe]
+    AppearanceSettings:
+      type: object
+      properties:
+        backgroundColor:
+          type: string
+        textColor:
+          type: string
+        accentColor:
+          type: string
+        font:
+          type: string
+          enum: [system, serif, mono]
+        contentWidth:
+          type: integer
+          minimum: 480
+          maximum: 1000
+      required: [backgroundColor, textColor, accentColor, font, contentWidth]
+    BlogPost:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        slug:
+          type: string
+        date:
+          type: string
+        description:
+          type: string
+        body:
+          type: string
+        published:
+          type: boolean
+      required: [id, title, slug, date, description, body, published]
+    CaseStudy:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        slug:
+          type: string
+        year:
+          type: ["integer", "null"]
+        description:
+          type: string
+        body:
+          type: string
+        href:
+          type: string
+        published:
+          type: boolean
+      required: [id, title, slug, year, description, body, href, published]
+    Book:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        author:
+          type: string
+        note:
+          type: string
+        href:
+          type: string
+        published:
+          type: boolean
+      required: [id, title, author, note, href, published]
+    SiteContent:
+      type: object
+      properties:
+        profile:
+          $ref: "#/components/schemas/ProfileContent"
+        appearance:
+          $ref: "#/components/schemas/AppearanceSettings"
+        posts:
+          type: array
+          items:
+            $ref: "#/components/schemas/BlogPost"
+        caseStudies:
+          type: array
+          items:
+            $ref: "#/components/schemas/CaseStudy"
+        books:
+          type: array
+          items:
+            $ref: "#/components/schemas/Book"
+      required: [profile, appearance, posts, caseStudies, books]
+

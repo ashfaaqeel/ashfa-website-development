@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Ashfa Aqeel — Personal Website"
+description = "A lightweight personal website with editable story, journey, interests, links, blog posts, case studies, and books."
+version = "1.0.0"
+id = "artifacts/ashfa-aqeel-website"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 19911
+
+[services.development]
+run = "pnpm --filter @workspace/ashfa-aqeel-website run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/ashfa-aqeel-website", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/ashfa-aqeel-website/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "19911"
+BASE_PATH = "/"

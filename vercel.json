@@ -1,0 +1,12 @@
+{
+  "buildCommand": "pnpm --filter @workspace/ashfa-aqeel-website run build",
+  "outputDirectory": "artifacts/ashfa-aqeel-website/dist/public",
+  "rewrites": [
+    { "source": "/api", "destination": "/api?__route=/" },
+    { "source": "/api/:path*", "destination": "/api?__route=/:path*" },
+    { "source": "/blog", "destination": "/index.html" },
+    { "source": "/case-study", "destination": "/index.html" },
+    { "source": "/books", "destination": "/index.html" },
+    { "source": "/admin", "destination": "/index.html" }
+  ]
+}
