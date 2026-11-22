@@ -6,6 +6,8 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { AppearanceSettingsFont } from './appearanceSettingsFont';
+import type { AppearanceSettingsLinkStyle } from './appearanceSettingsLinkStyle';
+import type { AppearanceSettingsTextAlign } from './appearanceSettingsTextAlign';
 
 export interface AppearanceSettings {
   backgroundColor: string;
@@ -17,4 +19,100 @@ export interface AppearanceSettings {
      * @maximum 1000
      */
   contentWidth: number;
+  /** @maxLength 40 */
+  headingFont?: string;
+  /** @maxLength 40 */
+  bodyFont?: string;
+  /**
+     * @minimum 16
+     * @maximum 64
+     */
+  headingSize?: number;
+  /**
+     * @minimum 10
+     * @maximum 24
+     */
+  bodySize?: number;
+  /** @pattern ^#[0-9a-fA-F]{6}$ */
+  headingColor?: string;
+  /** @pattern ^#[0-9a-fA-F]{6}$ */
+  linkColor?: string;
+  /** @maxLength 40 */
+  sectionHeadingFont?: string;
+  /** @maxLength 40 */
+  subheadingFont?: string;
+  /** @maxLength 40 */
+  navFont?: string;
+  /** @maxLength 40 */
+  captionFont?: string;
+  /** @maxLength 40 */
+  metaFont?: string;
+  /**
+     * @minimum 9
+     * @maximum 48
+     */
+  sectionHeadingSize?: number;
+  /**
+     * @minimum 9
+     * @maximum 48
+     */
+  subheadingSize?: number;
+  /**
+     * @minimum 9
+     * @maximum 32
+     */
+  navSize?: number;
+  /**
+     * @minimum 9
+     * @maximum 28
+     */
+  captionSize?: number;
+  /**
+     * @minimum 9
+     * @maximum 28
+     */
+  metaSize?: number;
+  /** @pattern ^#[0-9a-fA-F]{6}$ */
+  sectionHeadingColor?: string;
+  /** @pattern ^#[0-9a-fA-F]{6}$ */
+  subheadingColor?: string;
+  /** @pattern ^#[0-9a-fA-F]{6}$ */
+  navColor?: string;
+  /** @pattern ^#[0-9a-fA-F]{6}$ */
+  captionColor?: string;
+  /** @pattern ^#[0-9a-fA-F]{6}$ */
+  metaColor?: string;
+  /** @pattern ^#[0-9a-fA-F]{6}$ */
+  linkHoverColor?: string;
+  /** @pattern ^#[0-9a-fA-F]{6}$ */
+  borderColor?: string;
+  /** @pattern ^#[0-9a-fA-F]{6}$ */
+  footerColor?: string;
+  textAlign?: AppearanceSettingsTextAlign;
+  /**
+     * @minimum 12
+     * @maximum 120
+     */
+  pageMargin?: number;
+  /**
+     * @minimum 8
+     * @maximum 160
+     */
+  sectionSpacing?: number;
+  /**
+     * @minimum 0
+     * @maximum 48
+     */
+  elementSpacing?: number;
+  /**
+     * @minimum 40
+     * @maximum 1000
+     */
+  imageMaxWidth?: number;
+  /**
+     * @minimum 0
+     * @maximum 24
+     */
+  cornerRadius?: number;
+  linkStyle?: AppearanceSettingsLinkStyle;
 }

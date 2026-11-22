@@ -8,7 +8,12 @@
 import type { AppearanceSettings } from './appearanceSettings';
 import type { BlogPost } from './blogPost';
 import type { Book } from './book';
+import type { BookGroup } from './bookGroup';
 import type { CaseStudy } from './caseStudy';
+import type { ContactSettings } from './contactSettings';
+import type { NavItem } from './navItem';
+import type { PageCopy } from './pageCopy';
+import type { PageSection } from './pageSection';
 import type { ProfileContent } from './profileContent';
 
 export interface SiteContent {
@@ -17,4 +22,15 @@ export interface SiteContent {
   posts: BlogPost[];
   caseStudies: CaseStudy[];
   books: Book[];
+  /**
+     * @maxItems 30
+     * @items.minLength 1
+     * @items.maxLength 60
+     */
+  bookCategories?: string[];
+  sections?: PageSection[];
+  navigation?: NavItem[];
+  contactSettings?: ContactSettings;
+  bookGroups?: BookGroup[];
+  pageCopy?: PageCopy;
 }

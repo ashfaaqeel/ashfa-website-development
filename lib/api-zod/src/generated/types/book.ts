@@ -12,5 +12,13 @@ export interface Book {
   author: string;
   note: string;
   href: string;
+  /** @maxLength 60 */
+  category?: string;
+  imageUrl?: string;
   published: boolean;
+  /** @maxLength 40 */
+  kind?: string;
+  showAuthor?: boolean;
+  showNote?: boolean;
+  showImage?: boolean;
 }

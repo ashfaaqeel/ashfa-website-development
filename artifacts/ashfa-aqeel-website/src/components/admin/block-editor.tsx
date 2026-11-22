@@ -1,0 +1,20 @@
+import type { ContentBlock } from '@workspace/api-client-react';
+import { ImageField } from '@/components/image-field';
+import { MarkdownTextarea } from '@/components/markdown-textarea';
+
+type Props = { blocks: ContentBlock[]; onChange: (blocks: ContentBlock[]) => void; testId: string };
+const makeId = () => `block-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+
+export function BlockEditor({ blocks, onChange, testId }: Props) {
+  const update = (id: string, patch: Partial<ContentBlock>) => onChange(blocks.map((block) => block.id === id ? { ...block, ...patch } : block));
+  const move = (index: number, direction: -1 | 1) => { const target = index + direction; if (target < 0 || target >= blocks.length) return; const next = [...blocks]; [next[index], next[target]] = [next[target]!, next[index]!]; onChange(next); };
+  const add = (type: ContentBlock['type']) => onChange([...blocks, { id: makeId(), type, text: '', level: type === 'heading' ? 2 : undefined, items: type === 'list' ? [''] : undefined, ordered: false }]);
+  return <div className="admin-block-editor" data-testid={testId}><div className="admin-actions"><button type="button" className="admin-button" onClick={() => add('paragraph')}>Add paragraph</button><button type="button" className="admin-button" onClick={() => add('heading')}>Add heading</button><button type="button" className="admin-button" onClick={() => add('quote')}>Add quote</button><button type="button" className="admin-button" onClick={() => add('list')}>Add list</button><button type="button" className="admin-button" onClick={() => add('image')}>Add image</button><button type="button" className="admin-button" onClick={() => add('divider')}>Add divider</button></div>
+    {blocks.map((block, index) => <div className="admin-card admin-block-card" key={block.id}><div className="admin-card-head"><strong>{block.type}</strong><div className="admin-actions"><button type="button" className="admin-button" onClick={() => move(index, -1)} disabled={index === 0}>Up</button><button type="button" className="admin-button" onClick={() => move(index, 1)} disabled={index === blocks.length - 1}>Down</button><button type="button" className="admin-button danger" onClick={() => onChange(blocks.filter((item) => item.id !== block.id))}>Remove</button></div></div>
+      {block.type === 'heading' && <div className="admin-grid"><MarkdownTextarea label="Heading" value={block.text ?? ''} onChange={(text) => update(block.id, { text })} testId={`${testId}-${block.id}-text`} rows={2} /><div className="admin-field"><label htmlFor={`${testId}-${block.id}-level`}>Level</label><select id={`${testId}-${block.id}-level`} value={block.level ?? 2} onChange={(event) => update(block.id, { level: Number(event.target.value) })}><option value="2">Heading 2</option><option value="3">Heading 3</option><option value="4">Heading 4</option></select></div></div>}
+      {(block.type === 'paragraph' || block.type === 'quote') && <MarkdownTextarea label={block.type === 'quote' ? 'Quote' : 'Paragraph'} value={block.text ?? ''} onChange={(text) => update(block.id, { text })} testId={`${testId}-${block.id}-text`} rows={5} />}
+      {block.type === 'list' && <MarkdownTextarea label="One item per line" value={(block.items ?? []).join('\n')} onChange={(text) => update(block.id, { items: text.split('\n') })} testId={`${testId}-${block.id}-items`} rows={5} />}
+      {block.type === 'image' && <><ImageField label="Image" value={block.imageUrl} testId={`${testId}-${block.id}-image`} onChange={(imageUrl) => update(block.id, { imageUrl })} /><div className="admin-grid"><div className="admin-field"><label htmlFor={`${testId}-${block.id}-alt`}>Alt text</label><input id={`${testId}-${block.id}-alt`} value={block.alt ?? ''} onChange={(event) => update(block.id, { alt: event.target.value })} /></div><div className="admin-field"><label htmlFor={`${testId}-${block.id}-caption`}>Caption</label><input id={`${testId}-${block.id}-caption`} value={block.caption ?? ''} onChange={(event) => update(block.id, { caption: event.target.value })} /></div></div></>}
+    </div>)}
+  </div>;
+}

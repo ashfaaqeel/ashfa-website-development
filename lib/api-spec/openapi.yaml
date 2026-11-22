@@ -14,6 +14,8 @@ tags:
     description: Public and private website content
   - name: auth
     description: Single-admin session
+  - name: contact
+    description: Visitor messages
 paths:
   /healthz:
     get:
@@ -119,6 +121,64 @@ paths:
           description: Invalid content
         "401":
           description: Admin session required
+  /contact:
+    post:
+      operationId: sendContactMessage
+      tags: [contact]
+      summary: Send a message to the site owner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContactMessageInput"
+      responses:
+        "200":
+          description: Message received
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactResult"
+        "400":
+          description: Invalid message
+        "429":
+          description: Too many messages
+  /admin/messages:
+    get:
+      operationId: listContactMessages
+      tags: [contact]
+      summary: List received contact messages
+      responses:
+        "200":
+          description: Received messages, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ContactMessage"
+        "401":
+          description: Admin session required
+  /admin/messages/{id}:
+    delete:
+      operationId: deleteContactMessage
+      tags: [contact]
+      summary: Delete a received contact message
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteResult"
+        "401":
+          description: Admin session required
 components:
   schemas:
     HealthStatus:
@@ -200,7 +260,226 @@ components:
           type: integer
           minimum: 480
           maximum: 1000
+        headingFont:
+          type: string
+          maxLength: 40
+        bodyFont:
+          type: string
+          maxLength: 40
+        headingSize:
+          type: integer
+          minimum: 16
+          maximum: 64
+        bodySize:
+          type: integer
+          minimum: 10
+          maximum: 24
+        headingColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        linkColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        sectionHeadingFont:
+          type: string
+          maxLength: 40
+        subheadingFont:
+          type: string
+          maxLength: 40
+        navFont:
+          type: string
+          maxLength: 40
+        captionFont:
+          type: string
+          maxLength: 40
+        metaFont:
+          type: string
+          maxLength: 40
+        sectionHeadingSize:
+          type: integer
+          minimum: 9
+          maximum: 48
+        subheadingSize:
+          type: integer
+          minimum: 9
+          maximum: 48
+        navSize:
+          type: integer
+          minimum: 9
+          maximum: 32
+        captionSize:
+          type: integer
+          minimum: 9
+          maximum: 28
+        metaSize:
+          type: integer
+          minimum: 9
+          maximum: 28
+        sectionHeadingColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        subheadingColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        navColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        captionColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        metaColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        linkHoverColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        borderColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        footerColor:
+          type: string
+          pattern: "^#[0-9a-fA-F]{6}$"
+        textAlign:
+          type: string
+          enum: [left, center, right]
+        pageMargin:
+          type: integer
+          minimum: 12
+          maximum: 120
+        sectionSpacing:
+          type: integer
+          minimum: 8
+          maximum: 160
+        elementSpacing:
+          type: integer
+          minimum: 0
+          maximum: 48
+        imageMaxWidth:
+          type: integer
+          minimum: 40
+          maximum: 1000
+        cornerRadius:
+          type: integer
+          minimum: 0
+          maximum: 24
+        linkStyle:
+          type: string
+          enum: [underline, plain]
       required: [backgroundColor, textColor, accentColor, font, contentWidth]
+    ContentBlock:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [paragraph, heading, quote, divider, list, image]
+        text:
+          type: string
+        level:
+          type: integer
+          minimum: 2
+          maximum: 4
+        ordered:
+          type: boolean
+        items:
+          type: array
+          items:
+            type: string
+        imageUrl:
+          type: string
+        alt:
+          type: string
+        caption:
+          type: string
+      required: [id, type]
+    SectionEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        text:
+          type: string
+        href:
+          type: string
+        imageUrl:
+          type: string
+        hidden:
+          type: boolean
+      required: [id, text]
+    PageSection:
+      type: object
+      properties:
+        id:
+          type: string
+        heading:
+          type: string
+        subtitle:
+          type: string
+        description:
+          type: string
+        body:
+          type: string
+        layout:
+          type: string
+          enum: [prose, split, compact, links]
+        hidden:
+          type: boolean
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/SectionEntry"
+      required: [id, layout, hidden]
+    NavItem:
+      type: object
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        href:
+          type: string
+        hidden:
+          type: boolean
+      required: [id, label, href, hidden]
+    ContactSettings:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [modal, mailto, url]
+        email:
+          type: string
+        url:
+          type: string
+      required: [mode]
+    BookGroup:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        hidden:
+          type: boolean
+      required: [id, name, hidden]
+    PageCopy:
+      type: object
+      properties:
+        blogTitle:
+          type: string
+        blogIntro:
+          type: string
+        booksTitle:
+          type: string
+        booksIntro:
+          type: string
+        studiesTitle:
+          type: string
+        studiesIntro:
+          type: string
     BlogPost:
       type: object
       properties:
@@ -216,8 +495,36 @@ components:
           type: string
         body:
           type: string
+        imageUrl:
+          type: string
         published:
           type: boolean
+        subtitle:
+          type: string
+        author:
+          type: string
+        categories:
+          type: array
+          items:
+            type: string
+        tags:
+          type: array
+          items:
+            type: string
+        showCoverOnPage:
+          type: boolean
+        cardShowTitle:
+          type: boolean
+        cardShowImage:
+          type: boolean
+        cardShowDescription:
+          type: boolean
+        cardShowDate:
+          type: boolean
+        blocks:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContentBlock"
       required: [id, title, slug, date, description, body, published]
     CaseStudy:
       type: object
@@ -236,8 +543,36 @@ components:
           type: string
         href:
           type: string
+        imageUrl:
+          type: string
         published:
           type: boolean
+        subtitle:
+          type: string
+        author:
+          type: string
+        categories:
+          type: array
+          items:
+            type: string
+        tags:
+          type: array
+          items:
+            type: string
+        showCoverOnPage:
+          type: boolean
+        cardShowTitle:
+          type: boolean
+        cardShowImage:
+          type: boolean
+        cardShowDescription:
+          type: boolean
+        cardShowDate:
+          type: boolean
+        blocks:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContentBlock"
       required: [id, title, slug, year, description, body, href, published]
     Book:
       type: object
@@ -252,7 +587,21 @@ components:
           type: string
         href:
           type: string
+        category:
+          type: string
+          maxLength: 60
+        imageUrl:
+          type: string
         published:
+          type: boolean
+        kind:
+          type: string
+          maxLength: 40
+        showAuthor:
+          type: boolean
+        showNote:
+          type: boolean
+        showImage:
           type: boolean
       required: [id, title, author, note, href, published]
     SiteContent:
@@ -274,5 +623,77 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Book"
+        bookCategories:
+          type: array
+          items:
+            type: string
+            minLength: 1
+            maxLength: 60
+          maxItems: 30
+        sections:
+          type: array
+          items:
+            $ref: "#/components/schemas/PageSection"
+        navigation:
+          type: array
+          items:
+            $ref: "#/components/schemas/NavItem"
+        contactSettings:
+          $ref: "#/components/schemas/ContactSettings"
+        bookGroups:
+          type: array
+          items:
+            $ref: "#/components/schemas/BookGroup"
+        pageCopy:
+          $ref: "#/components/schemas/PageCopy"
       required: [profile, appearance, posts, caseStudies, books]
+    ContactMessageInput:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        email:
+          type: string
+          format: email
+          maxLength: 200
+        message:
+          type: string
+          minLength: 10
+          maxLength: 5000
+        website:
+          type: string
+          description: Honeypot field. Must be empty.
+      required: [name, email, message]
+    ContactResult:
+      type: object
+      properties:
+        ok:
+          type: boolean
+      required: [ok]
+    ContactMessage:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        email:
+          type: string
+        message:
+          type: string
+        createdAt:
+          type: string
+        emailed:
+          type: boolean
+        emailError:
+          type: ["string", "null"]
+      required: [id, name, email, message, createdAt, emailed, emailError]
+    DeleteResult:
+      type: object
+      properties:
+        ok:
+          type: boolean
+      required: [ok]
 

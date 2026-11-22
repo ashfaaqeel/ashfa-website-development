@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, lt } from "drizzle-orm";
 import { Router, type IRouter } from "express";
 import {
   GetAdminContentResponse,
@@ -7,7 +7,8 @@ import {
   UpdateAdminContentResponse,
   type SiteContent,
 } from "@workspace/api-zod";
-import { db, siteContentTable } from "@workspace/db";
+import { db, siteContentTable, uploadedImagesTable } from "@workspace/db";
+import { logger } from "../lib/logger";
 import { requireAdmin } from "./auth";
 
 const router: IRouter = Router();
@@ -30,7 +31,36 @@ const initialContent: SiteContent = {
   posts: [],
   caseStudies: [],
   books: [],
+  bookCategories: ["Classics", "Economics", "Business", "Islam & History", "Other"],
 };
+
+const IMAGE_REFERENCE = /\/api\/images\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/g;
+const ORPHAN_GRACE_MS = 60 * 60 * 1000;
+
+/**
+ * Removes uploaded images that no saved content refers to any more (replaced or
+ * removed images). Images newer than an hour are kept so an upload that has not
+ * been saved yet is never deleted. Failures never block saving content.
+ */
+async function removeOrphanedImages(document: unknown): Promise<void> {
+  try {
+    const referenced = new Set<string>();
+    for (const match of JSON.stringify(document).matchAll(IMAGE_REFERENCE)) {
+      if (match[1]) referenced.add(match[1]);
+    }
+    const candidates = await db
+      .select({ id: uploadedImagesTable.id })
+      .from(uploadedImagesTable)
+      .where(lt(uploadedImagesTable.createdAt, new Date(Date.now() - ORPHAN_GRACE_MS)));
+    for (const { id } of candidates) {
+      if (!referenced.has(id)) {
+        await db.delete(uploadedImagesTable).where(eq(uploadedImagesTable.id, id));
+      }
+    }
+  } catch (error) {
+    logger.warn({ err: error }, "Skipped orphaned image cleanup");
+  }
+}
 
 async function loadOrCreateContent(): Promise<SiteContent> {
   const [existing] = await db
@@ -100,6 +130,7 @@ router.put("/admin/content", requireAdmin, async (req, res): Promise<void> => {
       set: { document: parsed.data, updatedAt: new Date() },
     });
 
+  await removeOrphanedImages(parsed.data);
   res.json(UpdateAdminContentResponse.parse(parsed.data));
 });
 

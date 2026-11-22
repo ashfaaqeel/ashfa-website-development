@@ -1,0 +1,2932 @@
+diff --git a/artifacts/api-server/src/app.ts b/artifacts/api-server/src/app.ts
+index 3a81755..a0cf7d6 100644
+--- a/artifacts/api-server/src/app.ts
++++ b/artifacts/api-server/src/app.ts
+@@ -1,10 +1,12 @@
+-import express, { type Express } from "express";
++import express, { type Express, type NextFunction, type Request, type Response } from "express";
+ import cookieParser from "cookie-parser";
+ import pinoHttp from "pino-http";
+ import router from "./routes";
+ import { logger } from "./lib/logger";
+ 
+ const app: Express = express();
++// One proxy hop (Replit / Vercel) so req.ip is the real visitor, used for rate limits.
++app.set("trust proxy", 1);
+ 
+ app.use(
+   pinoHttp({
+@@ -31,4 +33,25 @@ app.use(cookieParser());
+ 
+ app.use("/api", router);
+ 
++// JSON errors (never an HTML page or stack trace), e.g. oversized uploads or bad JSON.
++app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
++  if (res.headersSent) {
++    next(error);
++    return;
++  }
++  const status = (error as { status?: number; statusCode?: number })?.status
++    ?? (error as { statusCode?: number })?.statusCode
++    ?? 500;
++  if (status === 413) {
++    res.status(413).json({ error: "That file is too large. Images can be up to 4 MB." });
++    return;
++  }
++  if (status >= 400 && status < 500) {
++    res.status(status).json({ error: "The request could not be understood." });
++    return;
++  }
++  logger.error({ err: error }, "Unhandled API error");
++  res.status(500).json({ error: "Something went wrong. Please try again." });
++});
++
+ export default app;
+diff --git a/artifacts/api-server/src/lib/email.ts b/artifacts/api-server/src/lib/email.ts
+new file mode 100644
+index 0000000..985e2eb
+--- /dev/null
++++ b/artifacts/api-server/src/lib/email.ts
+@@ -0,0 +1,54 @@
++import { logger } from "./logger";
++
++export type EmailResult = { sent: boolean; error: string | null };
++
++const escapeHtml = (value: string) =>
++  value
++    .replaceAll("&", "&amp;")
++    .replaceAll("<", "&lt;")
++    .replaceAll(">", "&gt;")
++    .replaceAll('"', "&quot;");
++
++/**
++ * Delivers a contact-form message to the site owner through the Resend HTTP API.
++ * Needs RESEND_API_KEY and CONTACT_TO_EMAIL. Without them nothing is sent, and the
++ * message is still kept in the database and shown in the private editor.
++ */
++export async function sendContactEmail(input: {
++  name: string;
++  email: string;
++  message: string;
++}): Promise<EmailResult> {
++  const apiKey = process.env.RESEND_API_KEY?.trim();
++  const to = process.env.CONTACT_TO_EMAIL?.trim();
++  if (!apiKey || !to) {
++    return { sent: false, error: "Email delivery is not configured (RESEND_API_KEY / CONTACT_TO_EMAIL)." };
++  }
++  const from = process.env.CONTACT_FROM_EMAIL?.trim() || "Website contact <onboarding@resend.dev>";
++  const safeName = input.name.replace(/[\r\n]+/g, " ").trim();
++
++  try {
++    const response = await fetch(process.env.RESEND_API_URL?.trim() || "https://api.resend.com/emails", {
++      method: "POST",
++      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
++      body: JSON.stringify({
++        from,
++        to: [to],
++        reply_to: input.email,
++        subject: `New message from ${safeName}`.slice(0, 150),
++        text: `From: ${safeName} <${input.email}>\n\n${input.message}`,
++        html: `<p><strong>${escapeHtml(safeName)}</strong> &lt;${escapeHtml(input.email)}&gt;</p><p style="white-space:pre-wrap">${escapeHtml(input.message)}</p>`,
++      }),
++      signal: AbortSignal.timeout(8000),
++    });
++    if (!response.ok) {
++      const detail = (await response.text().catch(() => "")).slice(0, 300);
++      logger.error({ status: response.status }, "Contact email provider rejected the request");
++      return { sent: false, error: `Email provider error ${response.status}: ${detail}` };
++    }
++    return { sent: true, error: null };
++  } catch (error) {
++    logger.error({ err: error }, "Contact email request failed");
++    return { sent: false, error: error instanceof Error ? error.message : "Email request failed." };
++  }
++}
+diff --git a/artifacts/api-server/src/routes/contact.ts b/artifacts/api-server/src/routes/contact.ts
+new file mode 100644
+index 0000000..04f132c
+--- /dev/null
++++ b/artifacts/api-server/src/routes/contact.ts
+@@ -0,0 +1,108 @@
++import { createHash } from "node:crypto";
++import { and, count, desc, eq, gte } from "drizzle-orm";
++import { Router, type IRouter } from "express";
++import {
++  ListContactMessagesResponse,
++  SendContactMessageBody,
++  SendContactMessageResponse,
++  DeleteContactMessageResponse,
++} from "@workspace/api-zod";
++import { contactMessagesTable, db } from "@workspace/db";
++import { requireAdmin } from "./auth";
++import { sendContactEmail } from "../lib/email";
++import { logger } from "../lib/logger";
++
++const router: IRouter = Router();
++const WINDOW_MS = 60 * 60 * 1000;
++const MAX_PER_SENDER = 5;
++const MAX_TOTAL = 100;
++
++function senderHash(ip: string): string {
++  return createHash("sha256")
++    .update(`${ip}|${process.env.SESSION_SECRET ?? "contact"}`)
++    .digest("hex");
++}
++
++router.post("/contact", async (req, res): Promise<void> => {
++  const parsed = SendContactMessageBody.safeParse(req.body);
++  if (!parsed.success) {
++    res.status(400).json({ error: "Please enter your name, a valid email and a message of at least 10 characters." });
++    return;
++  }
++  const { email, message, website } = parsed.data;
++  const name = parsed.data.name.replace(/\s+/g, " ").trim();
++
++  // Honeypot: real visitors never see or fill this field. Pretend success to bots.
++  if (website && website.trim() !== "") {
++    res.json(SendContactMessageResponse.parse({ ok: true }));
++    return;
++  }
++
++  const ipHash = senderHash(req.ip || req.socket.remoteAddress || "unknown");
++  const since = new Date(Date.now() - WINDOW_MS);
++
++  try {
++    const [sender] = await db
++      .select({ value: count() })
++      .from(contactMessagesTable)
++      .where(and(eq(contactMessagesTable.ipHash, ipHash), gte(contactMessagesTable.createdAt, since)));
++    const [total] = await db
++      .select({ value: count() })
++      .from(contactMessagesTable)
++      .where(gte(contactMessagesTable.createdAt, since));
++    if ((sender?.value ?? 0) >= MAX_PER_SENDER || (total?.value ?? 0) >= MAX_TOTAL) {
++      res.status(429).json({ error: "Too many messages just now. Please try again later." });
++      return;
++    }
++
++    const [saved] = await db
++      .insert(contactMessagesTable)
++      .values({ name, email: email.trim(), message: message.trim(), ipHash })
++      .returning({ id: contactMessagesTable.id });
++
++    const result = await sendContactEmail({ name, email: email.trim(), message: message.trim() });
++    if (saved) {
++      await db
++        .update(contactMessagesTable)
++        .set({ emailed: result.sent, emailError: result.error })
++        .where(eq(contactMessagesTable.id, saved.id));
++    }
++    res.json(SendContactMessageResponse.parse({ ok: true }));
++  } catch (error) {
++    logger.error({ err: error }, "Contact message failed");
++    res.status(500).json({ error: "Your message could not be sent. Please try again in a moment." });
++  }
++});
++
++router.get("/admin/messages", requireAdmin, async (_req, res): Promise<void> => {
++  const rows = await db
++    .select()
++    .from(contactMessagesTable)
++    .orderBy(desc(contactMessagesTable.createdAt))
++    .limit(200);
++  res.json(
++    ListContactMessagesResponse.parse(
++      rows.map((row) => ({
++        id: row.id,
++        name: row.name,
++        email: row.email,
++        message: row.message,
++        createdAt: row.createdAt.toISOString(),
++        emailed: row.emailed,
++        emailError: row.emailError,
++      })),
++    ),
++  );
++});
++
++router.delete("/admin/messages/:id", requireAdmin, async (req, res): Promise<void> => {
++  const id = Number(req.params.id);
++  if (!Number.isInteger(id) || id <= 0) {
++    res.status(400).json({ error: "Invalid message id." });
++    return;
++  }
++  await db.delete(contactMessagesTable).where(eq(contactMessagesTable.id, id));
++  res.json(DeleteContactMessageResponse.parse({ ok: true }));
++});
++
++export default router;
+diff --git a/artifacts/api-server/src/routes/images.ts b/artifacts/api-server/src/routes/images.ts
+new file mode 100644
+index 0000000..4e16a8b
+--- /dev/null
++++ b/artifacts/api-server/src/routes/images.ts
+@@ -0,0 +1,111 @@
++import { randomUUID } from "node:crypto";
++import express, { Router, type IRouter } from "express";
++import { eq } from "drizzle-orm";
++import { db, uploadedImagesTable } from "@workspace/db";
++import { requireAdmin } from "./auth";
++import { logger } from "../lib/logger";
++
++const router: IRouter = Router();
++
++/** Vercel functions reject request bodies over ~4.5 MB, so stay below that. */
++export const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
++const ALLOWED_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
++const ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
++
++/** Confirms the bytes really are the image type that was declared. */
++function matchesSignature(type: string, b: Buffer): boolean {
++  switch (type) {
++    case "image/png":
++      return b.length > 8 && b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
++    case "image/jpeg":
++      return b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
++    case "image/gif":
++      return b.length > 6 && ["GIF87a", "GIF89a"].includes(b.subarray(0, 6).toString("ascii"));
++    case "image/webp":
++      return b.length > 12 && b.subarray(0, 4).toString("ascii") === "RIFF" && b.subarray(8, 12).toString("ascii") === "WEBP";
++    default:
++      return false;
++  }
++}
++
++function isMissingTable(error: unknown): boolean {
++  const code = (error as { code?: string; cause?: { code?: string } })?.code
++    ?? (error as { cause?: { code?: string } })?.cause?.code;
++  return code === "42P01";
++}
++
++router.post(
++  "/admin/images",
++  requireAdmin,
++  express.raw({ type: ALLOWED_TYPES, limit: MAX_IMAGE_BYTES }),
++  async (req, res): Promise<void> => {
++    const type = req.get("content-type")?.split(";")[0]?.trim().toLowerCase() ?? "";
++    if (!ALLOWED_TYPES.includes(type)) {
++      res.status(415).json({ error: "Upload a PNG, JPEG, WebP or GIF image." });
++      return;
++    }
++    const body: unknown = req.body;
++    if (!Buffer.isBuffer(body) || body.length === 0) {
++      res.status(400).json({ error: "No image data was received." });
++      return;
++    }
++    if (!matchesSignature(type, body)) {
++      res.status(400).json({ error: "That file does not look like a valid image." });
++      return;
++    }
++
++    const id = randomUUID();
++    try {
++      await db.insert(uploadedImagesTable).values({
++        id,
++        contentType: type,
++        data: body,
++        size: body.length,
++      });
++    } catch (error) {
++      logger.error({ err: error }, "Image upload failed");
++      if (isMissingTable(error)) {
++        res.status(503).json({
++          error: "Image storage is not set up yet. Run the database push/migration, then try again.",
++        });
++        return;
++      }
++      res.status(500).json({ error: "The image could not be stored. Please try again." });
++      return;
++    }
++    res.status(201).json({ id, url: `/api/images/${id}`, contentType: type, size: body.length });
++  },
++);
++
++router.get("/images/:id", async (req, res): Promise<void> => {
++  const id = String(req.params.id);
++  if (!ID_PATTERN.test(id)) {
++    res.status(404).end();
++    return;
++  }
++  try {
++    const [image] = await db
++      .select()
++      .from(uploadedImagesTable)
++      .where(eq(uploadedImagesTable.id, id))
++      .limit(1);
++    if (!image) {
++      res.status(404).end();
++      return;
++    }
++    res.set({
++      "Content-Type": image.contentType,
++      "Content-Length": String(image.size),
++      // Ids are random and never reused, so the bytes behind one never change.
++      "Cache-Control": "public, max-age=31536000, immutable",
++      "X-Content-Type-Options": "nosniff",
++      "Content-Security-Policy": "default-src 'none'; sandbox",
++    });
++    res.end(image.data);
++  } catch (error) {
++    logger.error({ err: error }, "Image read failed");
++    res.status(500).end();
++  }
++});
++
++export default router;
+diff --git a/artifacts/api-server/src/routes/index.ts b/artifacts/api-server/src/routes/index.ts
+index 6817eab..5cbf349 100644
+--- a/artifacts/api-server/src/routes/index.ts
++++ b/artifacts/api-server/src/routes/index.ts
+@@ -2,11 +2,15 @@ import { Router, type IRouter } from "express";
+ import authRouter from "./auth";
+ import healthRouter from "./health";
+ import siteContentRouter from "./site-content";
++import imagesRouter from "./images";
++import contactRouter from "./contact";
+ 
+ const router: IRouter = Router();
+ 
+ router.use(healthRouter);
+ router.use(authRouter);
+ router.use(siteContentRouter);
++router.use(imagesRouter);
++router.use(contactRouter);
+ 
+ export default router;
+diff --git a/artifacts/api-server/src/routes/site-content.ts b/artifacts/api-server/src/routes/site-content.ts
+index 6aa4ab7..7c3beff 100644
+--- a/artifacts/api-server/src/routes/site-content.ts
++++ b/artifacts/api-server/src/routes/site-content.ts
+@@ -1,4 +1,4 @@
+-import { eq } from "drizzle-orm";
++import { eq, lt } from "drizzle-orm";
+ import { Router, type IRouter } from "express";
+ import {
+   GetAdminContentResponse,
+@@ -7,7 +7,8 @@ import {
+   UpdateAdminContentResponse,
+   type SiteContent,
+ } from "@workspace/api-zod";
+-import { db, siteContentTable } from "@workspace/db";
++import { db, siteContentTable, uploadedImagesTable } from "@workspace/db";
++import { logger } from "../lib/logger";
+ import { requireAdmin } from "./auth";
+ 
+ const router: IRouter = Router();
+@@ -30,8 +31,37 @@ const initialContent: SiteContent = {
+   posts: [],
+   caseStudies: [],
+   books: [],
++  bookCategories: ["Classics", "Economics", "Business", "Islam & History", "Other"],
+ };
+ 
++const IMAGE_REFERENCE = /\/api\/images\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/g;
++const ORPHAN_GRACE_MS = 60 * 60 * 1000;
++
++/**
++ * Removes uploaded images that no saved content refers to any more (replaced or
++ * removed images). Images newer than an hour are kept so an upload that has not
++ * been saved yet is never deleted. Failures never block saving content.
++ */
++async function removeOrphanedImages(document: unknown): Promise<void> {
++  try {
++    const referenced = new Set<string>();
++    for (const match of JSON.stringify(document).matchAll(IMAGE_REFERENCE)) {
++      if (match[1]) referenced.add(match[1]);
++    }
++    const candidates = await db
++      .select({ id: uploadedImagesTable.id })
++      .from(uploadedImagesTable)
++      .where(lt(uploadedImagesTable.createdAt, new Date(Date.now() - ORPHAN_GRACE_MS)));
++    for (const { id } of candidates) {
++      if (!referenced.has(id)) {
++        await db.delete(uploadedImagesTable).where(eq(uploadedImagesTable.id, id));
++      }
++    }
++  } catch (error) {
++    logger.warn({ err: error }, "Skipped orphaned image cleanup");
++  }
++}
++
+ async function loadOrCreateContent(): Promise<SiteContent> {
+   const [existing] = await db
+     .select()
+@@ -100,6 +130,7 @@ router.put("/admin/content", requireAdmin, async (req, res): Promise<void> => {
+       set: { document: parsed.data, updatedAt: new Date() },
+     });
+ 
++  await removeOrphanedImages(parsed.data);
+   res.json(UpdateAdminContentResponse.parse(parsed.data));
+ });
+ 
+diff --git a/artifacts/ashfa-aqeel-website/src/components/admin/appearance-panel.tsx b/artifacts/ashfa-aqeel-website/src/components/admin/appearance-panel.tsx
+new file mode 100644
+index 0000000..6959f9d
+--- /dev/null
++++ b/artifacts/ashfa-aqeel-website/src/components/admin/appearance-panel.tsx
+@@ -0,0 +1,86 @@
++import { useEffect } from 'react';
++import type { SiteContent } from '@workspace/api-client-react';
++import { ColorField } from '@/components/admin/color-field';
++import {
++  DEFAULT_BODY_SIZE,
++  DEFAULT_HEADING_SIZE,
++  FONT_OPTIONS,
++  appearanceStyle,
++  ensureFontsLoaded,
++  legacyFontFor,
++  resolveBodyFont,
++  resolveHeadingFont,
++  type Appearance,
++  type FontCategory,
++} from '@/lib/appearance';
++
++type Props = { content: SiteContent; change: (next: SiteContent) => void };
++
++const GROUPS: { category: FontCategory; label: string }[] = [
++  { category: 'sans', label: 'Sans serif' },
++  { category: 'serif', label: 'Serif' },
++  { category: 'mono', label: 'Monospace' },
++];
++
++function FontSelect({ id, label, value, onChange, testId }: { id: string; label: string; value: string; onChange: (key: string) => void; testId: string }) {
++  return (
++    <div className="admin-field">
++      <label htmlFor={id}>{label}</label>
++      <select id={id} value={value} onChange={(event) => onChange(event.target.value)} data-testid={testId}>
++        {GROUPS.map((group) => (
++          <optgroup key={group.category} label={group.label}>
++            {FONT_OPTIONS.filter((font) => font.category === group.category).map((font) => <option key={font.key} value={font.key}>{font.label}</option>)}
++          </optgroup>
++        ))}
++      </select>
++    </div>
++  );
++}
++
++export function AppearancePanel({ content, change }: Props) {
++  const appearance = content.appearance;
++  const update = (patch: Partial<Appearance>) => change({ ...content, appearance: { ...appearance, ...patch } });
++  const unset = (...keys: (keyof Appearance)[]) => {
++    const next = { ...appearance };
++    for (const key of keys) delete next[key];
++    change({ ...content, appearance: next });
++  };
++  const body = resolveBodyFont(appearance);
++  const heading = resolveHeadingFont(appearance);
++  const headingSize = appearance.headingSize ?? DEFAULT_HEADING_SIZE;
++  const bodySize = appearance.bodySize ?? DEFAULT_BODY_SIZE;
++
++  useEffect(() => { ensureFontsLoaded([body, heading]); }, [body, heading]);
++
++  return (
++    <section className="admin-panel" data-testid="panel-appearance">
++      <h2 className="admin-section-title">Appearance</h2>
++      <p className="admin-hint">Typography and colour for every public page. Changes apply after “Save changes”.</p>
++
++      <h3 className="admin-section-title admin-subtitle">Type</h3>
++      <div className="admin-grid">
++        <FontSelect id="appearance-heading-font" label="Heading font" value={heading.key} onChange={(key) => update({ headingFont: key })} testId="select-appearance-heading-font" />
++        <FontSelect id="appearance-body-font" label="Body font" value={body.key} onChange={(key) => { const font = FONT_OPTIONS.find((item) => item.key === key); update({ bodyFont: key, ...(font ? { font: legacyFontFor(font) } : {}) }); }} testId="select-appearance-body-font" />
++        <div className="admin-field"><label htmlFor="appearance-heading-size">Heading size · {headingSize}px</label><input id="appearance-heading-size" type="range" min="16" max="64" step="1" value={headingSize} onChange={(e) => update({ headingSize: Number(e.target.value) })} data-testid="input-appearance-heading-size" /></div>
++        <div className="admin-field"><label htmlFor="appearance-body-size">Body size · {bodySize}px</label><input id="appearance-body-size" type="range" min="10" max="24" step="1" value={bodySize} onChange={(e) => update({ bodySize: Number(e.target.value) })} data-testid="input-appearance-body-size" /></div>
++      </div>
++
++      <h3 className="admin-section-title admin-subtitle">Colour</h3>
++      <div className="admin-grid">
++        <ColorField label="Background color" value={appearance.backgroundColor} testId="input-appearance-background" onChange={(backgroundColor) => update({ backgroundColor })} />
++        <ColorField label="Body text color" value={appearance.textColor} testId="input-appearance-text" onChange={(textColor) => update({ textColor })} />
++        <ColorField label="Heading color" value={appearance.headingColor ?? appearance.textColor} testId="input-appearance-heading-color" onChange={(headingColor) => update({ headingColor })} onReset={appearance.headingColor ? () => unset('headingColor') : undefined} />
++        <ColorField label="Link color" value={appearance.linkColor ?? appearance.accentColor} testId="input-appearance-link-color" onChange={(linkColor) => update({ linkColor })} onReset={appearance.linkColor ? () => unset('linkColor') : undefined} />
++        <ColorField label="Accent color" value={appearance.accentColor} testId="input-appearance-accent" onChange={(accentColor) => update({ accentColor })} />
++        <div className="admin-field"><label htmlFor="appearance-width">Content width · {appearance.contentWidth}px</label><input id="appearance-width" type="range" min="480" max="1000" step="10" value={appearance.contentWidth} onChange={(e) => update({ contentWidth: Number(e.target.value) })} data-testid="input-appearance-width" /></div>
++      </div>
++      <div className="admin-actions"><button type="button" className="admin-button" onClick={() => unset('headingFont', 'bodyFont', 'headingSize', 'bodySize', 'headingColor', 'linkColor')} data-testid="button-appearance-reset">Reset type and colours to defaults</button></div>
++
++      <div className="admin-preview admin-appearance-preview" style={{ ...appearanceStyle(appearance), backgroundColor: appearance.backgroundColor, color: appearance.textColor, maxWidth: appearance.contentWidth, fontFamily: 'var(--app-font-sans)' }} data-testid="preview-appearance">
++        <p className="admin-eyebrow">Preview</p>
++        <h3 className="page-title" style={{ fontFamily: 'var(--font-heading)', fontSize: 'var(--heading-size)', color: 'var(--heading-color, var(--ink))' }}>A little change in tone.</h3>
++        <p className="prose-copy">This is how the site’s type and colour come together, with a <a href="#preview" onClick={(event) => event.preventDefault()}>link inside the text</a>.</p>
++      </div>
++    </section>
++  );
++}
+diff --git a/artifacts/ashfa-aqeel-website/src/components/admin/book-categories.tsx b/artifacts/ashfa-aqeel-website/src/components/admin/book-categories.tsx
+new file mode 100644
+index 0000000..825e81f
+--- /dev/null
++++ b/artifacts/ashfa-aqeel-website/src/components/admin/book-categories.tsx
+@@ -0,0 +1,79 @@
++import { useState } from 'react';
++import type { SiteContent } from '@workspace/api-client-react';
++import { FALLBACK_CATEGORY, isFallbackCategory, resolveCategories } from '@/lib/books';
++
++type Props = { content: SiteContent; change: (next: SiteContent) => void };
++
++const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
++
++/** Add, rename, reorder and remove book categories. Books follow their category on rename. */
++export function BookCategoryManager({ content, change }: Props) {
++  const categories = resolveCategories(content.bookCategories);
++  const [draft, setDraft] = useState('');
++  const [problem, setProblem] = useState('');
++
++  const countIn = (name: string) => content.books.filter((book) => same(book.category?.trim() || FALLBACK_CATEGORY, name)).length;
++  const commit = (list: string[], books = content.books) => { setProblem(''); change({ ...content, bookCategories: list, books }); };
++  const taken = (name: string, ignoreIndex = -1) => categories.some((item, i) => i !== ignoreIndex && same(item, name));
++
++  const add = () => {
++    const name = draft.trim();
++    if (!name) return;
++    if (taken(name)) { setProblem(`“${name}” already exists.`); return; }
++    commit([...categories, name]);
++    setDraft('');
++  };
++
++  const rename = (index: number, value: string) => {
++    const name = value.trim();
++    const old = categories[index];
++    if (!name || name === old) return;
++    if (taken(name, index)) { setProblem(`“${name}” already exists.`); return; }
++    commit(
++      categories.map((item, i) => (i === index ? name : item)),
++      content.books.map((book) => (book.category && same(book.category, old) ? { ...book, category: name } : book)),
++    );
++  };
++
++  const remove = (index: number) => {
++    const old = categories[index];
++    const moved = countIn(old);
++    if (!window.confirm(moved ? `Remove “${old}”? Its ${moved} book(s) will move to “${FALLBACK_CATEGORY}”.` : `Remove “${old}”?`)) return;
++    commit(
++      categories.filter((_, i) => i !== index),
++      content.books.map((book) => (book.category && same(book.category, old) ? { ...book, category: FALLBACK_CATEGORY } : book)),
++    );
++  };
++
++  const move = (index: number, direction: -1 | 1) => {
++    const target = index + direction;
++    if (target < 0 || target >= categories.length) return;
++    const next = [...categories];
++    [next[index], next[target]] = [next[target]!, next[index]!];
++    commit(next);
++  };
++
++  return (
++    <section className="admin-group" data-testid="panel-book-categories">
++      <div className="admin-group-head"><h3 className="admin-section-title">Categories</h3></div>
++      <p className="admin-hint">The order here is the order on the Books page. “{FALLBACK_CATEGORY}” is the fallback for uncategorised books and stays.</p>
++      {categories.map((name, index) => {
++        const fallback = isFallbackCategory(name);
++        return (
++          <div className="admin-cat-row" key={`${index}-${name}`}>
++            <input aria-label={`Category ${index + 1}`} defaultValue={name} disabled={fallback} onBlur={(event) => rename(index, event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} data-testid={`input-category-${index}`} />
++            <span className="admin-cat-count">{countIn(name)} book{countIn(name) === 1 ? '' : 's'}</span>
++            <button type="button" className="admin-button" onClick={() => move(index, -1)} disabled={index === 0} aria-label={`Move ${name} up`} data-testid={`button-category-up-${index}`}>↑</button>
++            <button type="button" className="admin-button" onClick={() => move(index, 1)} disabled={index === categories.length - 1} aria-label={`Move ${name} down`} data-testid={`button-category-down-${index}`}>↓</button>
++            <button type="button" className="admin-button danger" onClick={() => remove(index)} disabled={fallback} data-testid={`button-category-remove-${index}`}>Remove</button>
++          </div>
++        );
++      })}
++      <div className="admin-cat-row">
++        <input aria-label="New category name" placeholder="New category" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); add(); } }} maxLength={60} data-testid="input-category-new" />
++        <button type="button" className="admin-button" onClick={add} data-testid="button-category-add">Add category</button>
++      </div>
++      {problem && <p className="admin-error" role="alert" data-testid="status-category-error">{problem}</p>}
++    </section>
++  );
++}
+diff --git a/artifacts/ashfa-aqeel-website/src/components/admin/color-field.tsx b/artifacts/ashfa-aqeel-website/src/components/admin/color-field.tsx
+new file mode 100644
+index 0000000..528a8d7
+--- /dev/null
++++ b/artifacts/ashfa-aqeel-website/src/components/admin/color-field.tsx
+@@ -0,0 +1,3 @@
++export function ColorField({ label, value, onChange, testId, onReset }: { label: string; value: string; onChange: (value: string) => void; testId: string; onReset?: () => void }) {
++  return <div className="admin-field"><label htmlFor={testId}>{label}</label><div className="admin-color-input"><input id={testId} type="color" value={/^#[0-9a-f]{6}$/i.test(value) ? value : '#587b79'} onChange={(event) => onChange(event.target.value)} data-testid={testId} /><input aria-label={`${label} hex value`} value={value} onChange={(event) => onChange(event.target.value)} data-testid={`${testId}-text`} />{onReset && <button type="button" className="admin-button" onClick={onReset} data-testid={`${testId}-reset`}>Default</button>}</div></div>;
++}
+diff --git a/artifacts/ashfa-aqeel-website/src/components/admin/messages-panel.tsx b/artifacts/ashfa-aqeel-website/src/components/admin/messages-panel.tsx
+new file mode 100644
+index 0000000..8802a08
+--- /dev/null
++++ b/artifacts/ashfa-aqeel-website/src/components/admin/messages-panel.tsx
+@@ -0,0 +1,34 @@
++import { useQueryClient } from '@tanstack/react-query';
++import { getListContactMessagesQueryKey, useDeleteContactMessage, useListContactMessages } from '@workspace/api-client-react';
++
++export function MessagesPanel() {
++  const queryClient = useQueryClient();
++  const messages = useListContactMessages();
++  const remove = useDeleteContactMessage();
++  const onDelete = (id: number) => {
++    if (!window.confirm('Delete this message?')) return;
++    remove.mutate({ id }, { onSuccess: () => queryClient.invalidateQueries({ queryKey: getListContactMessagesQueryKey() }) });
++  };
++
++  return (
++    <section className="admin-panel" data-testid="panel-messages">
++      <h2 className="admin-section-title">Messages</h2>
++      <p className="admin-hint">Everything sent through the site’s contact form is kept here, even if email delivery is not set up.</p>
++      {messages.isLoading && <div className="admin-skeleton" role="status">Loading messages…</div>}
++      {messages.isError && <div className="admin-notice" role="alert">Messages could not be loaded. <button className="admin-button" onClick={() => messages.refetch()}>Try again</button></div>}
++      {messages.data && messages.data.length === 0 && <div className="admin-empty" data-testid="status-admin-messages-empty">No messages yet.</div>}
++      {messages.data?.map((item) => (
++        <article className="admin-message" key={item.id} data-testid={`card-admin-message-${item.id}`}>
++          <div className="admin-card-head">
++            <h3 className="admin-card-title">{item.name}</h3>
++            <span className={`admin-badge ${item.emailed ? 'live' : ''}`} title={item.emailError ?? undefined}>{item.emailed ? 'Emailed' : 'Saved only'}</span>
++          </div>
++          <p className="admin-message-meta"><a href={`mailto:${item.email}`}>{item.email}</a> · {new Date(item.createdAt).toLocaleString()}</p>
++          <p className="admin-message-body">{item.message}</p>
++          {!item.emailed && item.emailError && <p className="admin-hint">Email not sent: {item.emailError}</p>}
++          <div className="admin-actions"><a className="admin-button" href={`mailto:${item.email}`}>Reply</a><button className="admin-button danger" onClick={() => onDelete(item.id)} disabled={remove.isPending} data-testid={`button-delete-message-${item.id}`}>Delete</button></div>
++        </article>
++      ))}
++    </section>
++  );
++}
+diff --git a/artifacts/ashfa-aqeel-website/src/components/contact-dialog.tsx b/artifacts/ashfa-aqeel-website/src/components/contact-dialog.tsx
+new file mode 100644
+index 0000000..a681f38
+--- /dev/null
++++ b/artifacts/ashfa-aqeel-website/src/components/contact-dialog.tsx
+@@ -0,0 +1,133 @@
++import { createContext, useCallback, useContext, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
++import { useSendContactMessage } from '@workspace/api-client-react';
++import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
++
++type ContactContextValue = { openContact: () => void };
++const ContactContext = createContext<ContactContextValue>({ openContact: () => undefined });
++export const useContactDialog = () => useContext(ContactContext);
++
++const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
++type Errors = Partial<Record<'name' | 'email' | 'message', string>>;
++
++function serverMessage(error: unknown): string {
++  const data = (error as { data?: { error?: unknown } } | null)?.data;
++  return typeof data?.error === 'string' ? data.error : 'Your message could not be sent. Please try again in a moment.';
++}
++
++export function ContactProvider({ children }: { children: ReactNode }) {
++  const [open, setOpen] = useState(false);
++  const [name, setName] = useState('');
++  const [email, setEmail] = useState('');
++  const [message, setMessage] = useState('');
++  const [website, setWebsite] = useState('');
++  const [errors, setErrors] = useState<Errors>({});
++  const [sendError, setSendError] = useState('');
++  const [sent, setSent] = useState(false);
++  const send = useSendContactMessage();
++
++  // The dialog is opened programmatically (no DialogTrigger), so remember the opener
++  // and give it focus back on close, as keyboard and screen-reader users expect.
++  const opener = useRef<HTMLElement | null>(null);
++  const openContact = useCallback(() => {
++    opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
++    setOpen(true);
++  }, []);
++  const value = useMemo(() => ({ openContact }), [openContact]);
++
++  const onOpenChange = (next: boolean) => {
++    setOpen(next);
++    if (!next) {
++      // Keep what was typed unless the message went through.
++      setErrors({});
++      setSendError('');
++      if (sent) {
++        setSent(false);
++        setName(''); setEmail(''); setMessage('');
++        send.reset();
++      }
++    }
++  };
++
++  const validate = (): Errors => {
++    const next: Errors = {};
++    if (!name.trim()) next.name = 'Please tell me your name.';
++    if (!EMAIL_PATTERN.test(email.trim())) next.email = 'Enter a valid email address.';
++    if (message.trim().length < 10) next.message = 'Please write at least a few words (10 characters).';
++    return next;
++  };
++
++  const onSubmit = (event: FormEvent<HTMLFormElement>) => {
++    event.preventDefault();
++    const found = validate();
++    setErrors(found);
++    setSendError('');
++    if (Object.keys(found).length > 0) return;
++    send.mutate(
++      { data: { name: name.trim(), email: email.trim(), message: message.trim(), website } },
++      {
++        onSuccess: () => setSent(true),
++        onError: (error) => setSendError(serverMessage(error)),
++      },
++    );
++  };
++
++  return (
++    <ContactContext.Provider value={value}>
++      {children}
++      <Dialog open={open} onOpenChange={onOpenChange}>
++        <DialogContent
++          className="contact-dialog"
++          data-testid="dialog-contact"
++          onCloseAutoFocus={(event) => {
++            event.preventDefault();
++            opener.current?.focus();
++          }}
++        >
++          {sent ? (
++            <div role="status" data-testid="status-contact-success">
++              <DialogTitle className="contact-title">Thank you.</DialogTitle>
++              <DialogDescription className="contact-intro">
++                Your message has been sent. I’ll reply to {email.trim()} when I can.
++              </DialogDescription>
++              <div className="contact-actions">
++                <button type="button" className="contact-button primary" onClick={() => onOpenChange(false)} data-testid="button-contact-done">Close</button>
++              </div>
++            </div>
++          ) : (
++            <form onSubmit={onSubmit} noValidate data-testid="form-contact">
++              <DialogTitle className="contact-title">Say hello</DialogTitle>
++              <DialogDescription className="contact-intro">A note, a question or an idea is welcome.</DialogDescription>
++
++              <div className="contact-field">
++                <label htmlFor="contact-name">Name</label>
++                <input id="contact-name" autoComplete="name" maxLength={100} value={name} onChange={(e) => setName(e.target.value)} aria-invalid={Boolean(errors.name)} aria-describedby={errors.name ? 'contact-name-error' : undefined} data-testid="input-contact-name" />
++                {errors.name && <p id="contact-name-error" className="contact-error" role="alert" data-testid="error-contact-name">{errors.name}</p>}
++              </div>
++              <div className="contact-field">
++                <label htmlFor="contact-email">Email</label>
++                <input id="contact-email" type="email" autoComplete="email" maxLength={200} value={email} onChange={(e) => setEmail(e.target.value)} aria-invalid={Boolean(errors.email)} aria-describedby={errors.email ? 'contact-email-error' : undefined} data-testid="input-contact-email" />
++                {errors.email && <p id="contact-email-error" className="contact-error" role="alert" data-testid="error-contact-email">{errors.email}</p>}
++              </div>
++              <div className="contact-field">
++                <label htmlFor="contact-message">Message</label>
++                <textarea id="contact-message" rows={5} maxLength={5000} value={message} onChange={(e) => setMessage(e.target.value)} aria-invalid={Boolean(errors.message)} aria-describedby={errors.message ? 'contact-message-error' : undefined} data-testid="input-contact-message" />
++                {errors.message && <p id="contact-message-error" className="contact-error" role="alert" data-testid="error-contact-message">{errors.message}</p>}
++              </div>
++              {/* Honeypot: hidden from people and assistive tech, filled in only by bots. */}
++              <div className="contact-trap" aria-hidden="true">
++                <label htmlFor="contact-website">Website</label>
++                <input id="contact-website" tabIndex={-1} autoComplete="off" value={website} onChange={(e) => setWebsite(e.target.value)} />
++              </div>
++
++              {sendError && <p className="contact-error contact-send-error" role="alert" data-testid="error-contact-send">{sendError}</p>}
++              <div className="contact-actions">
++                <button type="submit" className="contact-button primary" disabled={send.isPending} data-testid="button-contact-send">{send.isPending ? 'Sending…' : 'Send message'}</button>
++                <button type="button" className="contact-button" onClick={() => onOpenChange(false)}>Cancel</button>
++              </div>
++            </form>
++          )}
++        </DialogContent>
++      </Dialog>
++    </ContactContext.Provider>
++  );
++}
+diff --git a/artifacts/ashfa-aqeel-website/src/components/image-field.tsx b/artifacts/ashfa-aqeel-website/src/components/image-field.tsx
+new file mode 100644
+index 0000000..13a0e26
+--- /dev/null
++++ b/artifacts/ashfa-aqeel-website/src/components/image-field.tsx
+@@ -0,0 +1,71 @@
++import { useId, useRef, useState } from 'react';
++import { IMAGE_ACCEPT, uploadImage } from '@/lib/images';
++
++type ImageFieldProps = {
++  label: string;
++  value: string | undefined;
++  onChange: (url: string | undefined) => void;
++  testId: string;
++};
++
++/** Upload, preview, replace and remove one image. The stored URL is saved with the content. */
++export function ImageField({ label, value, onChange, testId }: ImageFieldProps) {
++  const inputId = useId();
++  const input = useRef<HTMLInputElement>(null);
++  // Always call the newest onChange: the upload is async, and edits made while it runs
++  // must not be overwritten by a callback captured when the file was chosen.
++  const latestOnChange = useRef(onChange);
++  latestOnChange.current = onChange;
++  const [busy, setBusy] = useState(false);
++  const [error, setError] = useState('');
++
++  const pick = async (file: File | undefined) => {
++    if (!file) return;
++    setBusy(true);
++    setError('');
++    try {
++      const url = await uploadImage(file);
++      latestOnChange.current(url);
++    } catch (problem) {
++      setError(problem instanceof Error ? problem.message : 'The image could not be uploaded.');
++    } finally {
++      setBusy(false);
++      if (input.current) input.current.value = '';
++    }
++  };
++
++  return (
++    <div className="admin-field admin-image-field" data-testid={testId}>
++      <label htmlFor={inputId}>{label}</label>
++      <div className="admin-image-row">
++        {value ? (
++          <img className="admin-image-preview" src={value} alt="" data-testid={`${testId}-preview`} />
++        ) : (
++          <div className="admin-image-empty" aria-hidden="true">No image</div>
++        )}
++        <div className="admin-image-actions">
++          <input
++            ref={input}
++            id={inputId}
++            type="file"
++            accept={IMAGE_ACCEPT}
++            className="admin-file-input"
++            disabled={busy}
++            onChange={(event) => void pick(event.target.files?.[0])}
++            data-testid={`${testId}-file`}
++          />
++          <button type="button" className="admin-button" disabled={busy} onClick={() => input.current?.click()} data-testid={`${testId}-choose`}>
++            {busy ? 'Uploading…' : value ? 'Replace image' : 'Upload image'}
++          </button>
++          {value && !busy && (
++            <button type="button" className="admin-button danger" onClick={() => onChange(undefined)} data-testid={`${testId}-remove`}>
++              Remove
++            </button>
++          )}
++        </div>
++      </div>
++      {error && <p className="admin-error" role="alert" data-testid={`${testId}-error`}>{error}</p>}
++      <p className="admin-hint admin-image-hint">PNG, JPEG, WebP or GIF · saved with “Save changes”</p>
++    </div>
++  );
++}
+diff --git a/artifacts/ashfa-aqeel-website/src/components/live-clock.tsx b/artifacts/ashfa-aqeel-website/src/components/live-clock.tsx
+new file mode 100644
+index 0000000..71ee42b
+--- /dev/null
++++ b/artifacts/ashfa-aqeel-website/src/components/live-clock.tsx
+@@ -0,0 +1,24 @@
++import { useEffect, useState } from 'react';
++
++const TIME_ZONE = 'Asia/Kolkata';
++const formatter = new Intl.DateTimeFormat('en-US', {
++  timeZone: TIME_ZONE,
++  hour: 'numeric',
++  minute: '2-digit',
++  second: '2-digit',
++  hour12: true,
++});
++
++/** Live clock in India Standard Time. Ticks every second and cleans up on unmount. */
++export function LiveClock() {
++  const [now, setNow] = useState(() => new Date());
++  useEffect(() => {
++    const timer = window.setInterval(() => setNow(new Date()), 1000);
++    return () => window.clearInterval(timer);
++  }, []);
++  return (
++    <time className="live-clock" dateTime={now.toISOString()} data-testid="text-footer-time">
++      {formatter.format(now)} IST
++    </time>
++  );
++}
+diff --git a/artifacts/ashfa-aqeel-website/src/components/markdown-textarea.tsx b/artifacts/ashfa-aqeel-website/src/components/markdown-textarea.tsx
+new file mode 100644
+index 0000000..2aebc2d
+--- /dev/null
++++ b/artifacts/ashfa-aqeel-website/src/components/markdown-textarea.tsx
+@@ -0,0 +1,78 @@
++import { useId, useRef, useState } from 'react';
++
++type Props = {
++  label: string;
++  value: string;
++  onChange: (value: string) => void;
++  testId: string;
++  rows?: number;
++};
++
++/** Textarea with Bold / Italic / Link helpers. Everything stays plain Markdown text. */
++export function MarkdownTextarea({ label, value, onChange, testId, rows = 6 }: Props) {
++  const id = useId();
++  const area = useRef<HTMLTextAreaElement>(null);
++  const [linking, setLinking] = useState(false);
++  const [url, setUrl] = useState('https://');
++  const selection = useRef({ start: 0, end: 0 });
++
++  const replaceSelection = (before: string, after: string, fallback: string, start: number, end: number) => {
++    const selected = value.slice(start, end) || fallback;
++    const next = `${value.slice(0, start)}${before}${selected}${after}${value.slice(end)}`;
++    onChange(next);
++    requestAnimationFrame(() => {
++      area.current?.focus();
++      area.current?.setSelectionRange(start + before.length, start + before.length + selected.length);
++    });
++  };
++
++  const wrap = (mark: string, fallback: string) => {
++    const el = area.current;
++    replaceSelection(mark, mark, fallback, el?.selectionStart ?? value.length, el?.selectionEnd ?? value.length);
++  };
++
++  const openLink = () => {
++    const el = area.current;
++    selection.current = { start: el?.selectionStart ?? value.length, end: el?.selectionEnd ?? value.length };
++    setUrl('https://');
++    setLinking(true);
++  };
++
++  const applyLink = () => {
++    const target = url.trim();
++    if (!target || target === 'https://') return;
++    const { start, end } = selection.current;
++    replaceSelection('[', `](${target})`, 'link text', start, end);
++    setLinking(false);
++  };
++
++  return (
++    <div className="admin-field">
++      <label htmlFor={id}>{label}</label>
++      <div className="admin-md-toolbar" role="toolbar" aria-label="Formatting">
++        <button type="button" className="admin-button" onClick={() => wrap('**', 'bold text')} data-testid={`${testId}-bold`}>Bold</button>
++        <button type="button" className="admin-button" onClick={() => wrap('*', 'italic text')} data-testid={`${testId}-italic`}>Italic</button>
++        <button type="button" className="admin-button" onClick={openLink} data-testid={`${testId}-link`}>Link selected text</button>
++      </div>
++      {linking && (
++        <div className="admin-md-link" data-testid={`${testId}-link-form`}>
++          <input
++            aria-label="Link address"
++            value={url}
++            autoFocus
++            onChange={(event) => setUrl(event.target.value)}
++            onKeyDown={(event) => {
++              if (event.key === 'Enter') { event.preventDefault(); applyLink(); }
++              if (event.key === 'Escape') setLinking(false);
++            }}
++            data-testid={`${testId}-link-url`}
++          />
++          <button type="button" className="admin-button primary" onClick={applyLink} data-testid={`${testId}-link-apply`}>Add link</button>
++          <button type="button" className="admin-button" onClick={() => setLinking(false)}>Cancel</button>
++        </div>
++      )}
++      <textarea id={id} ref={area} rows={rows} value={value} onChange={(event) => onChange(event.target.value)} data-testid={testId} />
++      <p className="admin-hint admin-md-hint">Markdown: <code>[words to link](https://example.com)</code>, <code>**bold**</code>, <code>*italic*</code>. Select words, then press “Link selected text”.</p>
++    </div>
++  );
++}
+diff --git a/artifacts/ashfa-aqeel-website/src/components/rich-text.tsx b/artifacts/ashfa-aqeel-website/src/components/rich-text.tsx
+new file mode 100644
+index 0000000..3384242
+--- /dev/null
++++ b/artifacts/ashfa-aqeel-website/src/components/rich-text.tsx
+@@ -0,0 +1,35 @@
++import ReactMarkdown, { type Components } from 'react-markdown';
++
++const isExternal = (href?: string) => Boolean(href && /^https?:\/\//i.test(href));
++
++const linkComponents: Components = {
++  a({ href, children, title }) {
++    const external = isExternal(href);
++    return (
++      <a href={href} title={title} target={external ? '_blank' : undefined} rel={external ? 'noopener noreferrer' : undefined}>
++        {children}
++      </a>
++    );
++  },
++};
++
++/**
++ * Block Markdown (paragraphs, links, emphasis, lists, quotes, images). Raw HTML is never
++ * rendered and unsafe URL schemes such as javascript: are removed by react-markdown.
++ */
++export function RichText({ children }: { children: string }) {
++  return <ReactMarkdown components={linkComponents}>{children}</ReactMarkdown>;
++}
++
++/** Inline-only Markdown for short text fields: links, bold, italic and code, no block elements. */
++export function InlineRichText({ children }: { children: string }) {
++  return (
++    <ReactMarkdown
++      components={{ ...linkComponents, p: ({ children: inner }) => <>{inner}</> }}
++      allowedElements={['p', 'a', 'em', 'strong', 'code']}
++      unwrapDisallowed
++    >
++      {children}
++    </ReactMarkdown>
++  );
++}
+diff --git a/artifacts/ashfa-aqeel-website/src/components/site-layout.tsx b/artifacts/ashfa-aqeel-website/src/components/site-layout.tsx
+index f8a5b70..a59c341 100644
+--- a/artifacts/ashfa-aqeel-website/src/components/site-layout.tsx
++++ b/artifacts/ashfa-aqeel-website/src/components/site-layout.tsx
+@@ -1,6 +1,9 @@
+-import { useEffect, type CSSProperties, type ReactNode } from 'react';
++import { useEffect, type ReactNode } from 'react';
+ import { useGetPublicContent } from '@workspace/api-client-react';
+ import { Link, useLocation } from 'wouter';
++import { ContactProvider, useContactDialog } from '@/components/contact-dialog';
++import { LiveClock } from '@/components/live-clock';
++import { appearanceStyle, applyAppearance } from '@/lib/appearance';
+ 
+ const navigation = [
+   { label: 'Home', href: '/' },
+@@ -13,51 +16,55 @@ type SiteLayoutProps = {
+   children: ReactNode;
+ };
+ 
++function SiteFooter() {
++  const { openContact } = useContactDialog();
++  return (
++    <footer className="site-footer">
++      <div className="footer-row">
++        <span>{'Ashfa Aqeel'}</span>
++        <button type="button" className="footer-contact" onClick={openContact} data-testid="button-open-contact">
++          Contact
++        </button>
++      </div>
++      <div className="footer-row footer-meta">
++        <span data-testid="text-footer-location">India</span>
++        <LiveClock />
++      </div>
++    </footer>
++  );
++}
++
+ export function SiteLayout({ children }: SiteLayoutProps) {
+   const [location] = useLocation();
+   const content = useGetPublicContent();
+   const appearance = content.data?.appearance;
+   useEffect(() => {
+-    if (!appearance) return;
+-    const root = document.documentElement;
+-    root.style.setProperty('--paper', appearance.backgroundColor);
+-    root.style.setProperty('--ink', appearance.textColor);
+-    root.style.setProperty('--link', appearance.accentColor);
+-    root.style.setProperty('--link-hover', appearance.accentColor);
+-    root.style.setProperty('--content-width', `${appearance.contentWidth}px`);
+-    root.style.setProperty('--app-font-sans', appearance.font === 'serif' ? "'Instrument Serif', Georgia, serif" : appearance.font === 'mono' ? "'DM Mono', monospace" : "'DM Sans', sans-serif");
++    if (appearance) applyAppearance(appearance);
+   }, [appearance]);
+-  const style = appearance ? {
+-    '--paper': appearance.backgroundColor,
+-    '--ink': appearance.textColor,
+-    '--link': appearance.accentColor,
+-    '--link-hover': appearance.accentColor,
+-    '--app-font-sans': appearance.font === 'serif' ? "'Instrument Serif', Georgia, serif" : appearance.font === 'mono' ? "'DM Mono', monospace" : "'DM Sans', sans-serif",
+-    '--content-width': `${appearance.contentWidth}px`,
+-  } as CSSProperties : undefined;
++  const style = appearance ? appearanceStyle(appearance) : undefined;
+ 
+   return (
+-    <div className="site-shell" style={style}>
+-      <header>
+-        <nav className="site-nav" aria-label="Main navigation">
+-          {navigation.map((item) => (
+-            <Link
+-              key={item.href}
+-              href={item.href}
+-              aria-current={location === item.href ? 'page' : undefined}
+-              data-testid={`link-nav-${item.label.toLowerCase().replaceAll(' ', '-')}`}
+-            >
+-              {item.label}
+-            </Link>
+-          ))}
+-        </nav>
+-      </header>
+-      <main id="main-content" className="page-content">
+-        {children}
+-      </main>
+-      <footer className="site-footer">
+-        <span>{'Ashfa Aqeel'}</span>
+-      </footer>
+-    </div>
++    <ContactProvider>
++      <div className="site-shell" style={style}>
++        <header>
++          <nav className="site-nav" aria-label="Main navigation">
++            {navigation.map((item) => (
++              <Link
++                key={item.href}
++                href={item.href}
++                aria-current={location === item.href ? 'page' : undefined}
++                data-testid={`link-nav-${item.label.toLowerCase().replaceAll(' ', '-')}`}
++              >
++                {item.label}
++              </Link>
++            ))}
++          </nav>
++        </header>
++        <main id="main-content" className="page-content">
++          {children}
++        </main>
++        <SiteFooter />
++      </div>
++    </ContactProvider>
+   );
+ }
+diff --git a/artifacts/ashfa-aqeel-website/src/index.css b/artifacts/ashfa-aqeel-website/src/index.css
+index 914b006..043acd9 100644
+--- a/artifacts/ashfa-aqeel-website/src/index.css
++++ b/artifacts/ashfa-aqeel-website/src/index.css
+@@ -50,49 +50,49 @@ a:focus-visible { outline: 2px solid var(--link); outline-offset: 4px; border-ra
+ button, input, textarea { font: inherit; }
+ 
+ .site-shell { width: min(100% - 40px, var(--content-width, 620px)); margin-inline: auto; padding-top: 34px; padding-bottom: 56px; }
+-.site-nav { display: flex; justify-content: center; align-items: center; gap: clamp(18px, 4.4vw, 34px); margin: 0 auto 84px; font-size: 12px; line-height: 1.5; letter-spacing: -0.045em; }
++.site-nav { display: flex; justify-content: center; align-items: center; gap: clamp(18px, 4.4vw, 34px); margin: 0 auto 84px; font-size: var(--body-size, 12px); line-height: 1.5; letter-spacing: -0.045em; }
+ .site-nav a { color: var(--quiet-color); text-decoration: none; white-space: nowrap; }
+ .site-nav a:hover, .site-nav a[aria-current='page'] { color: var(--ink); }
+ .site-nav a[aria-current='page'] { text-decoration: underline; text-decoration-color: #b8b6af; text-underline-offset: 5px; }
+ .page-content { min-height: 55vh; animation: appear 420ms ease both; }
+ .page-title { margin: 0 0 12px; font-size: 17px; line-height: 1.6; font-weight: 500; letter-spacing: -0.07em; }
+-.page-intro { margin: 0 0 46px; font-size: 12px; line-height: 1.9; color: var(--quiet-color); }
++.page-intro { margin: 0 0 46px; font-size: var(--body-size, 12px); line-height: 1.9; color: var(--quiet-color); }
+ .section { margin-top: 53px; }
+ .section:first-of-type { margin-top: 0; }
+-.section-label { margin: 0 0 17px; color: var(--quiet-color); font-size: 11px; font-weight: 400; line-height: 1.5; letter-spacing: -0.04em; }
+-.prose-copy { margin: 0 0 17px; font-size: 12px; line-height: 2.05; letter-spacing: -0.045em; }
++.section-label { margin: 0 0 17px; color: var(--quiet-color); font-size: calc(var(--body-size, 12px) * .92); font-weight: 400; line-height: 1.5; letter-spacing: -0.04em; }
++.prose-copy { margin: 0 0 17px; font-size: var(--body-size, 12px); line-height: 2.05; letter-spacing: -0.045em; }
+ .placeholder { color: #77766f; }
+ .journey { list-style: none; margin: 0; padding: 0; }
+-.journey li { display: grid; grid-template-columns: 90px 1fr; gap: 14px; padding: 9px 0; font-size: 12px; line-height: 1.8; }
++.journey li { display: grid; grid-template-columns: 90px 1fr; gap: 14px; padding: 9px 0; font-size: var(--body-size, 12px); line-height: 1.8; }
+ .journey-age { color: var(--quiet-color); white-space: nowrap; }
+ .interest-list { margin: 0; padding: 0; list-style: none; }
+-.interest-list li { position: relative; padding: 6px 0 6px 15px; font-size: 12px; line-height: 1.75; }
++.interest-list li { position: relative; padding: 6px 0 6px 15px; font-size: var(--body-size, 12px); line-height: 1.75; }
+ .interest-list li::before { content: '—'; position: absolute; left: 0; color: #aaa89f; }
+ .social-list { margin: 0; padding: 0; list-style: none; }
+-.social-list li { display: grid; grid-template-columns: 115px 1fr; gap: 12px; padding: 8px 0; font-size: 12px; line-height: 1.7; }
++.social-list li { display: grid; grid-template-columns: 115px 1fr; gap: 12px; padding: 8px 0; font-size: var(--body-size, 12px); line-height: 1.7; }
+ .social-name { color: var(--quiet-color); }
+ .social-placeholder { color: var(--ink); }
+ .empty-state { padding: 26px 0 24px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+-.empty-state p { margin: 0; font-size: 12px; line-height: 1.9; color: var(--quiet-color); }
++.empty-state p { margin: 0; font-size: var(--body-size, 12px); line-height: 1.9; color: var(--quiet-color); }
+ .empty-state .empty-title { margin-bottom: 7px; color: var(--ink); }
+-.empty-inline { margin: 0; color: var(--quiet-color); font-size: 11px; line-height: 1.8; }
++.empty-inline { margin: 0; color: var(--quiet-color); font-size: calc(var(--body-size, 12px) * .92); line-height: 1.8; }
+ .entry-list, .book-list { list-style: none; padding: 0; margin: 0; }
+-.entry-row, .book-row { display: grid; grid-template-columns: 90px 1fr; gap: 14px; padding: 15px 0; border-top: 1px solid var(--line); font-size: 12px; line-height: 1.85; }
+-.entry-row time { color: var(--quiet-color); font-size: 11px; }
++.entry-row, .book-row { display: grid; grid-template-columns: 90px 1fr; gap: 14px; padding: 15px 0; border-top: 1px solid var(--line); font-size: var(--body-size, 12px); line-height: 1.85; }
++.entry-row time { color: var(--quiet-color); font-size: calc(var(--body-size, 12px) * .92); }
+ .entry-row p, .book-row p { margin: 5px 0 0; color: var(--quiet-color); }
+ .book-row { grid-template-columns: 1fr; }
+ .book-title { margin: 0; color: var(--ink) !important; }
+-.book-author { font-size: 11px; }
+-.book-note { font-size: 11px; }
+-.site-footer { margin-top: 84px; padding-top: 15px; border-top: 1px solid var(--line); color: var(--quiet-color); font-size: 10px; line-height: 1.7; letter-spacing: -0.035em; }
++.book-author { font-size: calc(var(--body-size, 12px) * .92); }
++.book-note { font-size: calc(var(--body-size, 12px) * .92); }
++.site-footer { font-family: var(--font-ui, var(--app-font-mono)); margin-top: 84px; padding-top: 15px; border-top: 1px solid var(--line); color: var(--quiet-color); font-size: calc(var(--body-size, 12px) * .83); line-height: 1.7; letter-spacing: -0.035em; }
+ .not-found { padding-top: 3px; }
+-.not-found a { font-size: 12px; }
++.not-found a { font-size: var(--body-size, 12px); }
+ 
+ /* Quiet editorial system, extended into a deliberately practical editor. */
+-.site-nav { font-family: var(--app-font-mono); letter-spacing: .01em; }
+-.page-title { font-family: var(--app-font-serif); font-size: 25px; font-weight: 400; letter-spacing: -.02em; }
++.site-nav { font-family: var(--font-ui, var(--app-font-mono)); letter-spacing: .01em; }
++.page-title { font-family: var(--font-heading, var(--app-font-serif)); color: var(--heading-color, var(--ink)); font-size: var(--heading-size, 25px); font-weight: 400; letter-spacing: -.02em; }
+ .page-intro, .prose-copy, .entry-row, .book-row, .journey li, .interest-list li, .social-list li { letter-spacing: 0; }
+-.section-label { font-family: var(--app-font-mono); letter-spacing: .045em; text-transform: uppercase; font-size: 10px; }
++.section-label { font-family: var(--font-ui, var(--app-font-mono)); letter-spacing: .045em; text-transform: uppercase; font-size: calc(var(--body-size, 12px) * .83); }
+ .placeholder { color: var(--ink); }
+ .admin-shell { min-height: 100dvh; background: #f2f3ef; color: #29312e; padding: 32px clamp(18px, 4vw, 56px) 64px; }
+ .admin-wrap { width: min(100%, 980px); margin: 0 auto; }
+@@ -144,17 +144,17 @@ button, input, textarea { font: inherit; }
+   .admin-tabs { overflow:auto; flex-wrap:nowrap; }
+   .admin-tab { white-space:nowrap; }
+ }
+-.loading-state { border-top:1px solid var(--line); border-bottom:1px solid var(--line); padding:20px 0; color:var(--quiet-color); font-size:12px; }
+-.retry-button { border:0; background:none; color:var(--link); cursor:pointer; text-decoration:underline; font-size:12px; padding:8px 0; }
++.loading-state { border-top:1px solid var(--line); border-bottom:1px solid var(--line); padding:20px 0; color:var(--quiet-color); font-size: var(--body-size, 12px); }
++.retry-button { border:0; background:none; color:var(--link); cursor:pointer; text-decoration:underline; font-size: var(--body-size, 12px); padding:8px 0; }
+ .post-body { white-space:pre-line; }
+ .markdown-body { margin-top: 12px; color: var(--ink); }
+ .markdown-body > :first-child { margin-top: 0; }
+ .markdown-body > :last-child { margin-bottom: 0; }
+ .markdown-body p, .markdown-body li { color: var(--quiet-color); }
+-.markdown-body h1, .markdown-body h2, .markdown-body h3 { color: var(--ink); font-family: var(--app-font-serif); font-weight: 400; line-height: 1.4; }
+-.markdown-body h1 { font-size: 20px; }
+-.markdown-body h2 { font-size: 17px; }
+-.markdown-body h3 { font-size: 15px; }
++.markdown-body h1, .markdown-body h2, .markdown-body h3, .rich-text h1, .rich-text h2, .rich-text h3 { color: var(--heading-color, var(--ink)); font-family: var(--font-heading, var(--app-font-serif)); font-weight: 400; line-height: 1.4; }
++.markdown-body h1 { font-size: calc(var(--heading-size, 25px) * .8); }
++.markdown-body h2 { font-size: calc(var(--heading-size, 25px) * .68); }
++.markdown-body h3 { font-size: calc(var(--heading-size, 25px) * .6); }
+ .markdown-body ul, .markdown-body ol { padding-left: 20px; }
+ .markdown-body blockquote { margin: 12px 0; padding-left: 14px; border-left: 1px solid var(--line); color: var(--quiet-color); }
+ .admin-group { margin:30px 0; }
+@@ -170,7 +170,7 @@ button, input, textarea { font: inherit; }
+ @keyframes appear { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+ @media (max-width: 520px) {
+   .site-shell { width: min(100% - 36px, 620px); padding-top: 25px; padding-bottom: 38px; }
+-  .site-nav { gap: clamp(12px, 4.2vw, 22px); margin-bottom: 64px; font-size: 11px; }
++  .site-nav { gap: clamp(12px, 4.2vw, 22px); margin-bottom: 64px; font-size: calc(var(--body-size, 12px) * .92); }
+   .page-intro { margin-bottom: 38px; }
+   .section { margin-top: 45px; }
+   .journey li { grid-template-columns: 76px 1fr; gap: 10px; }
+@@ -180,3 +180,76 @@ button, input, textarea { font: inherit; }
+ @media (prefers-reduced-motion: reduce) {
+   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+ }
++
++/* ---------- Rich text (Markdown) in page copy ---------- */
++.prose-copy > :first-child { margin-top: 0; }
++.prose-copy > :last-child { margin-bottom: 0; }
++.prose-copy p { margin: 0 0 17px; }
++.prose-copy p:last-child { margin-bottom: 0; }
++.prose-copy ul, .prose-copy ol { padding-left: 20px; margin: 0 0 17px; }
++.prose-copy blockquote { margin: 12px 0; padding-left: 14px; border-left: 1px solid var(--line); color: var(--quiet-color); }
++.prose-copy h1, .prose-copy h2, .prose-copy h3 { margin: 22px 0 8px; }
++.markdown-body img, .prose-copy img { max-width: 100%; height: auto; }
++
++/* ---------- Books: quiet, categorised list ---------- */
++.book-group { margin-top: 40px; }
++.book-group:first-of-type { margin-top: 0; }
++.book-group .section-label { margin-bottom: 8px; }
++.book-list .book-row { border-top: 0; padding: 7px 0; line-height: 1.75; }
++.book-row.has-cover { grid-template-columns: 38px 1fr; align-items: start; gap: 14px; }
++.book-cover { display: block; width: 38px; aspect-ratio: 2 / 3; object-fit: cover; border-radius: 2px; border: 1px solid var(--line); background: var(--line); }
++.book-row p.book-line { margin: 0; color: var(--ink); }
++.book-row .book-author { color: var(--quiet-color); font-size: inherit; }
++.book-row p.book-note { margin: 2px 0 0; }
++
++/* ---------- Blog / case study images ---------- */
++.entry-image { display: block; width: 100%; max-height: 340px; margin: 10px 0 6px; object-fit: cover; border-radius: 2px; border: 1px solid var(--line); }
++
++/* ---------- Footer: location and live clock ---------- */
++.footer-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
++.footer-meta { margin-top: 4px; }
++.live-clock { font-variant-numeric: tabular-nums; }
++.footer-contact, .inline-link-button { background: none; border: 0; padding: 0; color: var(--link); cursor: pointer; font: inherit; letter-spacing: inherit; text-decoration: underline; text-decoration-color: #b9c8d1; text-underline-offset: 3px; }
++.footer-contact:hover, .inline-link-button:hover { color: var(--link-hover); text-decoration-color: currentColor; }
++.footer-contact:focus-visible, .inline-link-button:focus-visible { outline: 2px solid var(--link); outline-offset: 4px; }
++
++/* ---------- Contact dialog ---------- */
++.contact-dialog { max-width: 440px; width: calc(100% - 32px); background: var(--paper); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; padding: 30px 28px 26px; box-shadow: 0 24px 60px rgba(0, 0, 0, .18); font-family: var(--app-font-sans); }
++.contact-title { margin: 0 0 6px; font-family: var(--font-heading, var(--app-font-serif)); color: var(--heading-color, var(--ink)); font-size: calc(var(--heading-size, 25px) * .9); font-weight: 400; line-height: 1.3; letter-spacing: -.02em; text-align: left; }
++.contact-intro { margin: 0 0 22px; color: var(--quiet-color); font-size: var(--body-size, 12px); line-height: 1.8; text-align: left; }
++.contact-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
++.contact-field label { color: var(--quiet-color); font-family: var(--font-ui, var(--app-font-mono)); font-size: calc(var(--body-size, 12px) * .83); letter-spacing: .045em; text-transform: uppercase; }
++.contact-field input, .contact-field textarea { width: 100%; background: transparent; color: var(--ink); border: 1px solid var(--line); border-radius: 2px; padding: 10px 11px; font: inherit; font-size: max(var(--body-size, 12px), 14px); line-height: 1.6; outline: none; }
++.contact-field textarea { resize: vertical; min-height: 110px; }
++.contact-field input:focus, .contact-field textarea:focus { border-color: var(--link); box-shadow: 0 0 0 2px color-mix(in srgb, var(--link) 18%, transparent); }
++.contact-field [aria-invalid='true'] { border-color: #b4574c; }
++.contact-error { margin: 0; color: #b4574c; font-size: calc(var(--body-size, 12px) * .92); line-height: 1.6; }
++.contact-send-error { margin-bottom: 4px; }
++.contact-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
++.contact-button { border: 1px solid var(--line); border-radius: 2px; background: transparent; color: var(--ink); padding: 9px 15px; cursor: pointer; font-family: var(--font-ui, var(--app-font-mono)); font-size: calc(var(--body-size, 12px) * .95); }
++.contact-button:hover { border-color: var(--ink); }
++.contact-button.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
++.contact-button:disabled { opacity: .6; cursor: wait; }
++.contact-trap { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
++
++/* ---------- Editor additions ---------- */
++.admin-image-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
++.admin-image-preview { width: 96px; height: 96px; object-fit: cover; border: 1px solid #dce1db; background: #fbfcf9; }
++.admin-image-empty { display: grid; place-items: center; width: 96px; height: 96px; border: 1px dashed #cdd6cf; color: #8a948d; font: 10px var(--app-font-mono); }
++.admin-image-actions { display: flex; gap: 9px; flex-wrap: wrap; }
++.admin-image-hint { margin: 2px 0 0; }
++.admin-file-input { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; pointer-events: none; }
++.admin-md-toolbar { display: flex; flex-wrap: wrap; gap: 6px; }
++.admin-md-link { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
++.admin-md-link input { flex: 1; min-width: 200px; }
++.admin-md-hint { margin: 0; }
++.admin-md-hint code, .admin-hint code { background: #eceee9; padding: 1px 4px; border-radius: 2px; font: 11px var(--app-font-mono); }
++.admin-cat-row { display: flex; gap: 8px; align-items: center; padding: 8px 0; border-top: 1px solid #dfe3dd; }
++.admin-cat-row input { flex: 1; min-width: 0; background: #fbfcf9; color: #29312e; border: 1px solid #dce1db; border-radius: 2px; padding: 8px 10px; font: 13px var(--app-font-sans); }
++.admin-cat-count { color: #8a948d; font: 10px var(--app-font-mono); min-width: 52px; text-align: right; }
++.admin-message { border-top: 1px solid #dfe3dd; padding: 16px 0; }
++.admin-message-body { white-space: pre-wrap; overflow-wrap: anywhere; margin: 10px 0; font-size: 13px; line-height: 1.7; }
++.admin-message-meta { color: #78817b; font: 11px var(--app-font-mono); }
++.admin-grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
++@media (max-width: 650px) { .admin-grid-3 { grid-template-columns: 1fr; gap: 0; } .contact-dialog { padding: 24px 20px 20px; } .footer-row { font-size: inherit; } }
++.admin-subtitle { font-size: 17px; margin: 26px 0 12px; }
+diff --git a/artifacts/ashfa-aqeel-website/src/lib/appearance.ts b/artifacts/ashfa-aqeel-website/src/lib/appearance.ts
+new file mode 100644
+index 0000000..2258868
+--- /dev/null
++++ b/artifacts/ashfa-aqeel-website/src/lib/appearance.ts
+@@ -0,0 +1,116 @@
++import type { CSSProperties } from 'react';
++import type { SiteContent } from '@workspace/api-client-react';
++
++export type Appearance = SiteContent['appearance'];
++export type FontCategory = 'sans' | 'serif' | 'mono';
++
++export type FontOption = {
++  key: string;
++  label: string;
++  category: FontCategory;
++  /** CSS font-family stack. */
++  stack: string;
++  /** Google Fonts "family" query value. Omitted for system fonts and fonts already loaded in index.css. */
++  google?: string;
++};
++
++export const FONT_OPTIONS: FontOption[] = [
++  { key: 'dm-sans', label: 'DM Sans', category: 'sans', stack: "'DM Sans', sans-serif" },
++  { key: 'inter', label: 'Inter', category: 'sans', stack: "'Inter', sans-serif", google: 'Inter:wght@400;500;600' },
++  { key: 'work-sans', label: 'Work Sans', category: 'sans', stack: "'Work Sans', sans-serif", google: 'Work Sans:wght@400;500;600' },
++  { key: 'ibm-plex-sans', label: 'IBM Plex Sans', category: 'sans', stack: "'IBM Plex Sans', sans-serif", google: 'IBM Plex Sans:wght@400;500;600' },
++  { key: 'source-sans', label: 'Source Sans 3', category: 'sans', stack: "'Source Sans 3', sans-serif", google: 'Source Sans 3:wght@400;500;600' },
++  { key: 'manrope', label: 'Manrope', category: 'sans', stack: "'Manrope', sans-serif", google: 'Manrope:wght@400;500;600' },
++  { key: 'instrument-serif', label: 'Instrument Serif', category: 'serif', stack: "'Instrument Serif', Georgia, serif" },
++  { key: 'playfair', label: 'Playfair Display', category: 'serif', stack: "'Playfair Display', Georgia, serif", google: 'Playfair Display:wght@400;500;600' },
++  { key: 'lora', label: 'Lora', category: 'serif', stack: "'Lora', Georgia, serif", google: 'Lora:wght@400;500;600' },
++  { key: 'merriweather', label: 'Merriweather', category: 'serif', stack: "'Merriweather', Georgia, serif", google: 'Merriweather:wght@400;700' },
++  { key: 'source-serif', label: 'Source Serif 4', category: 'serif', stack: "'Source Serif 4', Georgia, serif", google: 'Source Serif 4:wght@400;500;600' },
++  { key: 'eb-garamond', label: 'EB Garamond', category: 'serif', stack: "'EB Garamond', Georgia, serif", google: 'EB Garamond:wght@400;500;600' },
++  { key: 'cormorant', label: 'Cormorant Garamond', category: 'serif', stack: "'Cormorant Garamond', Georgia, serif", google: 'Cormorant Garamond:wght@400;500;600' },
++  { key: 'dm-mono', label: 'DM Mono', category: 'mono', stack: "'DM Mono', monospace" },
++  { key: 'ibm-plex-mono', label: 'IBM Plex Mono', category: 'mono', stack: "'IBM Plex Mono', monospace", google: 'IBM Plex Mono:wght@400;500' },
++  { key: 'jetbrains-mono', label: 'JetBrains Mono', category: 'mono', stack: "'JetBrains Mono', monospace", google: 'JetBrains Mono:wght@400;500' },
++  { key: 'space-mono', label: 'Space Mono', category: 'mono', stack: "'Space Mono', monospace", google: 'Space Mono:wght@400;700' },
++  { key: 'system-sans', label: 'System sans', category: 'sans', stack: "ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif" },
++  { key: 'system-serif', label: 'System serif', category: 'serif', stack: "ui-serif, Georgia, 'Times New Roman', serif" },
++];
++
++export const DEFAULT_HEADING_FONT = 'instrument-serif';
++export const DEFAULT_HEADING_SIZE = 25;
++export const DEFAULT_BODY_SIZE = 12;
++
++/** The three original choices map onto the new font list so saved content keeps its look. */
++const LEGACY_FONT_KEY: Record<Appearance['font'], string> = {
++  system: 'dm-sans',
++  serif: 'instrument-serif',
++  mono: 'dm-mono',
++};
++
++const byKey = (key: string | undefined) => FONT_OPTIONS.find((font) => font.key === key);
++
++export function resolveBodyFont(appearance: Appearance): FontOption {
++  return byKey(appearance.bodyFont) ?? byKey(LEGACY_FONT_KEY[appearance.font])!;
++}
++
++export function resolveHeadingFont(appearance: Appearance): FontOption {
++  return byKey(appearance.headingFont) ?? byKey(DEFAULT_HEADING_FONT)!;
++}
++
++/** Keeps the legacy `font` field loosely in sync so older consumers still see a valid value. */
++export function legacyFontFor(font: FontOption): Appearance['font'] {
++  return font.category === 'serif' ? 'serif' : font.category === 'mono' ? 'mono' : 'system';
++}
++
++const loadedFonts = new Set<string>();
++
++/** Loads any Google-hosted fonts that are in use and not yet on the page. */
++export function ensureFontsLoaded(fonts: FontOption[]): void {
++  if (typeof document === 'undefined') return;
++  for (const font of fonts) {
++    if (!font.google || loadedFonts.has(font.key)) continue;
++    loadedFonts.add(font.key);
++    const link = document.createElement('link');
++    link.rel = 'stylesheet';
++    link.href = `https://fonts.googleapis.com/css2?family=${font.google.replaceAll(' ', '+')}&display=swap`;
++    link.dataset.siteFont = font.key;
++    document.head.appendChild(link);
++  }
++}
++
++/** CSS custom properties that carry every appearance setting. */
++export function appearanceVars(appearance: Appearance): Record<string, string> {
++  const body = resolveBodyFont(appearance);
++  const heading = resolveHeadingFont(appearance);
++  const vars: Record<string, string> = {
++    '--paper': appearance.backgroundColor,
++    '--ink': appearance.textColor,
++    '--link': appearance.linkColor ?? appearance.accentColor,
++    '--link-hover': appearance.linkColor ?? appearance.accentColor,
++    '--accent-color': appearance.accentColor,
++    '--content-width': `${appearance.contentWidth}px`,
++    '--app-font-sans': body.stack,
++    '--font-heading': heading.stack,
++    '--heading-size': `${appearance.headingSize ?? DEFAULT_HEADING_SIZE}px`,
++    '--body-size': `${appearance.bodySize ?? DEFAULT_BODY_SIZE}px`,
++  };
++  if (appearance.headingColor) vars['--heading-color'] = appearance.headingColor;
++  // Navigation, labels and the footer stay monospaced by default (the site's identity),
++  // and follow the body font once one has been chosen explicitly.
++  if (appearance.bodyFont) vars['--font-ui'] = body.stack;
++  return vars;
++}
++
++/** Applies appearance to :root so portals (modals) and the page background match. */
++export function applyAppearance(appearance: Appearance): void {
++  const root = document.documentElement;
++  const vars = appearanceVars(appearance);
++  for (const name of ['--heading-color', '--font-ui']) {
++    if (!(name in vars)) root.style.removeProperty(name);
++  }
++  for (const [name, value] of Object.entries(vars)) root.style.setProperty(name, value);
++  ensureFontsLoaded([resolveBodyFont(appearance), resolveHeadingFont(appearance)]);
++}
++
++export const appearanceStyle = (appearance: Appearance): CSSProperties =>
++  appearanceVars(appearance) as CSSProperties;
+diff --git a/artifacts/ashfa-aqeel-website/src/lib/books.ts b/artifacts/ashfa-aqeel-website/src/lib/books.ts
+new file mode 100644
+index 0000000..cebaa59
+--- /dev/null
++++ b/artifacts/ashfa-aqeel-website/src/lib/books.ts
+@@ -0,0 +1,29 @@
++import type { Book } from '@workspace/api-client-react';
++
++export const FALLBACK_CATEGORY = 'Other';
++export const DEFAULT_BOOK_CATEGORIES = ['Classics', 'Economics', 'Business', 'Islam & History', FALLBACK_CATEGORY];
++
++const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
++
++export const isFallbackCategory = (name: string) => same(name, FALLBACK_CATEGORY);
++
++/** Categories to use: the saved list, or the defaults for content saved before categories existed. */
++export function resolveCategories(saved: string[] | undefined): string[] {
++  const list = saved && saved.length > 0 ? saved : DEFAULT_BOOK_CATEGORIES;
++  return list.some(isFallbackCategory) ? list : [...list, FALLBACK_CATEGORY];
++}
++
++/** Books grouped in category order. Books with no (or an unknown) category fall into "Other". */
++export function groupBooks(books: Book[], savedCategories: string[] | undefined) {
++  const categories = resolveCategories(savedCategories);
++  return categories
++    .map((category) => ({
++      category,
++      books: books.filter((book) => {
++        const own = book.category?.trim();
++        const known = own ? categories.find((name) => same(name, own)) : undefined;
++        return known ? same(known, category) : isFallbackCategory(category);
++      }),
++    }))
++    .filter((group) => group.books.length > 0);
++}
+diff --git a/artifacts/ashfa-aqeel-website/src/lib/images.ts b/artifacts/ashfa-aqeel-website/src/lib/images.ts
+new file mode 100644
+index 0000000..208c61d
+--- /dev/null
++++ b/artifacts/ashfa-aqeel-website/src/lib/images.ts
+@@ -0,0 +1,53 @@
++const ACCEPTED = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
++const MAX_BYTES = 4 * 1024 * 1024;
++const MAX_DIMENSION = 1600;
++
++export const IMAGE_ACCEPT = ACCEPTED.join(',');
++
++async function downscale(file: File): Promise<Blob> {
++  // Animated GIFs would lose their frames; small images do not need work.
++  if (file.type === 'image/gif') return file;
++  let bitmap: ImageBitmap;
++  try {
++    bitmap = await createImageBitmap(file);
++  } catch {
++    return file;
++  }
++  const largest = Math.max(bitmap.width, bitmap.height);
++  if (largest <= MAX_DIMENSION && file.size <= 1.5 * 1024 * 1024) {
++    bitmap.close();
++    return file;
++  }
++  const scale = Math.min(1, MAX_DIMENSION / largest);
++  const canvas = document.createElement('canvas');
++  canvas.width = Math.round(bitmap.width * scale);
++  canvas.height = Math.round(bitmap.height * scale);
++  canvas.getContext('2d')?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
++  bitmap.close();
++  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/webp', 0.88));
++  // Keep whichever is smaller; toBlob may fall back to PNG on browsers without WebP encoding.
++  return blob && ACCEPTED.includes(blob.type) && blob.size < file.size ? blob : file;
++}
++
++/** Uploads an image to persistent storage and resolves with its permanent URL. */
++export async function uploadImage(file: File): Promise<string> {
++  if (!ACCEPTED.includes(file.type)) throw new Error('Choose a PNG, JPEG, WebP or GIF image.');
++  const body = await downscale(file);
++  if (body.size > MAX_BYTES) throw new Error('That image is over 4 MB even after resizing. Try a smaller one.');
++  const response = await fetch('/api/admin/images', {
++    method: 'POST',
++    headers: { 'Content-Type': body.type },
++    body,
++    credentials: 'same-origin',
++  });
++  let data: { url?: string; error?: string } = {};
++  try {
++    data = await response.json();
++  } catch {
++    /* non-JSON error body */
++  }
++  if (!response.ok || !data.url) {
++    throw new Error(data.error ?? (response.status === 401 ? 'Your session has ended. Sign in again.' : 'The image could not be uploaded.'));
++  }
++  return data.url;
++}
+diff --git a/artifacts/ashfa-aqeel-website/src/pages/admin.tsx b/artifacts/ashfa-aqeel-website/src/pages/admin.tsx
+index 7f176b4..e16e4ee 100644
+--- a/artifacts/ashfa-aqeel-website/src/pages/admin.tsx
++++ b/artifacts/ashfa-aqeel-website/src/pages/admin.tsx
+@@ -11,15 +11,24 @@ import {
+   useUpdateAdminContent,
+   type SiteContent,
+ } from '@workspace/api-client-react';
++import { AppearancePanel } from '@/components/admin/appearance-panel';
++import { BookCategoryManager } from '@/components/admin/book-categories';
++import { ColorField } from '@/components/admin/color-field';
++import { MessagesPanel } from '@/components/admin/messages-panel';
++import { ImageField } from '@/components/image-field';
++import { MarkdownTextarea } from '@/components/markdown-textarea';
++import { RichText } from '@/components/rich-text';
+ import { usePageMeta } from '@/hooks/use-page-meta';
++import { DEFAULT_BOOK_CATEGORIES, FALLBACK_CATEGORY, resolveCategories } from '@/lib/books';
+ 
+-type Section = 'story' | 'posts' | 'studies' | 'books' | 'appearance';
++type Section = 'story' | 'posts' | 'studies' | 'books' | 'appearance' | 'messages';
+ const sections: { id: Section; label: string }[] = [
+   { id: 'story', label: 'Homepage' },
+   { id: 'posts', label: 'Writing' },
+   { id: 'studies', label: 'Case studies' },
+   { id: 'books', label: 'Books' },
+   { id: 'appearance', label: 'Appearance' },
++  { id: 'messages', label: 'Messages' },
+ ];
+ const makeId = () => `entry-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+ function apiErrorMessage(error: unknown): string | null {
+@@ -32,7 +41,7 @@ function apiErrorMessage(error: unknown): string | null {
+ const freshContent = (): SiteContent => ({
+   profile: { name: '', introduction: '', journey: [], interests: [], placesToFindMe: [] },
+   appearance: { backgroundColor: '#f7f6f2', textColor: '#282b2a', accentColor: '#587b79', font: 'system', contentWidth: 620 },
+-  posts: [], caseStudies: [], books: [],
++  posts: [], caseStudies: [], books: [], bookCategories: DEFAULT_BOOK_CATEGORIES,
+ });
+ 
+ function Admin() {
+@@ -99,9 +108,9 @@ function Editor({ onSignOut, signingOut }: { onSignOut: () => void; signingOut:
+     <header className="admin-top"><div><p className="admin-eyebrow">Ashfa Aqeel · Private editor</p><h1 className="admin-heading">Your website</h1><p className="admin-intro">A calm corner for keeping things current.</p></div><button className="admin-button" onClick={onSignOut} disabled={signingOut} data-testid="button-admin-sign-out">{signingOut ? 'Signing out…' : 'Sign out'}</button></header>
+     <div className="admin-toolbar"><div className="admin-tabs" role="tablist" aria-label="Content editor">{sections.map((item) => <button key={item.id} role="tab" aria-selected={section === item.id} className="admin-tab" onClick={() => setSection(item.id)} data-testid={`tab-admin-${item.id}`}>{item.label}</button>)}</div></div>
+     <div className="admin-actions admin-save-row"><button className="admin-button primary" onClick={save} disabled={update.isPending} data-testid="button-save-content">{update.isPending ? 'Saving…' : 'Save changes'}</button><span className="admin-status" role="status" data-testid="status-save">{notice}</span></div>
+-    {section === 'story' && <section className="admin-panel" aria-labelledby="editor-story-title"><h2 className="admin-section-title" id="editor-story-title">Homepage story</h2><p className="admin-hint">The words and details that make the homepage yours.</p>
++    {section === 'story' && <section className="admin-panel" aria-labelledby="editor-story-title"><h2 className="admin-section-title" id="editor-story-title">Homepage story</h2><p className="admin-hint">The words and details that make the homepage yours. Journey and interest lines also accept Markdown links.</p>
+       <div className="admin-field"><label htmlFor="profile-name">Name</label><input id="profile-name" value={content.profile.name} onChange={(e) => change({ ...content, profile: { ...content.profile, name: e.target.value } })} data-testid="input-profile-name" /></div>
+-      <div className="admin-field"><label htmlFor="profile-intro">Background story</label><textarea id="profile-intro" value={content.profile.introduction} onChange={(e) => change({ ...content, profile: { ...content.profile, introduction: e.target.value } })} data-testid="textarea-profile-introduction" /></div>
++      <MarkdownTextarea label="Background story" value={content.profile.introduction} onChange={(introduction) => change({ ...content, profile: { ...content.profile, introduction } })} testId="textarea-profile-introduction" rows={9} />
+       <Group title="Journey" addLabel="Add milestone" onAdd={() => change({ ...content, profile: { ...content.profile, journey: [...content.profile.journey, { age: '', milestone: '' }] } })} testId="journey">
+         {content.profile.journey.map((item, index) => <div className="admin-card" key={`journey-${index}`}><div className="admin-inline"><Field label="Age" value={item.age} testId={`input-journey-age-${index}`} onChange={(age) => change({ ...content, profile: { ...content.profile, journey: content.profile.journey.map((row, i) => i === index ? { ...row, age } : row) } })} /><Field label="Milestone" value={item.milestone} testId={`input-journey-milestone-${index}`} onChange={(milestone) => change({ ...content, profile: { ...content.profile, journey: content.profile.journey.map((row, i) => i === index ? { ...row, milestone } : row) } })} /></div><button className="admin-button danger" onClick={() => change({ ...content, profile: { ...content.profile, journey: content.profile.journey.filter((_, i) => i !== index) } })} data-testid={`button-remove-journey-${index}`}>Remove row</button></div>)}
+       </Group>
+@@ -111,27 +120,22 @@ function Editor({ onSignOut, signingOut }: { onSignOut: () => void; signingOut:
+       <Group title="Places to find me" addLabel="Add social link" onAdd={() => change({ ...content, profile: { ...content.profile, placesToFindMe: [...content.profile.placesToFindMe, { platform: '', label: '', href: '' }] } })} testId="social">
+         {content.profile.placesToFindMe.map((place, index) => <div className="admin-card" key={`social-${index}`}><div className="admin-grid"><Field label="Platform" value={place.platform} testId={`input-social-platform-${index}`} onChange={(platform) => change({ ...content, profile: { ...content.profile, placesToFindMe: content.profile.placesToFindMe.map((row, i) => i === index ? { ...row, platform } : row) } })} /><Field label="Label" value={place.label} testId={`input-social-label-${index}`} onChange={(label) => change({ ...content, profile: { ...content.profile, placesToFindMe: content.profile.placesToFindMe.map((row, i) => i === index ? { ...row, label } : row) } })} /><Field label="Link" value={place.href} testId={`input-social-href-${index}`} onChange={(href) => change({ ...content, profile: { ...content.profile, placesToFindMe: content.profile.placesToFindMe.map((row, i) => i === index ? { ...row, href } : row) } })} /></div><button className="admin-button danger" onClick={() => change({ ...content, profile: { ...content.profile, placesToFindMe: content.profile.placesToFindMe.filter((_, i) => i !== index) } })} data-testid={`button-remove-social-${index}`}>Remove link</button></div>)}
+       </Group>
+-      <div className="admin-preview"><p className="admin-eyebrow">Preview</p><h3>{content.profile.name}</h3>{content.profile.introduction.split(/\n{2,}/).filter(Boolean).map((paragraph, index) => <p className="prose-copy" key={index}>{paragraph}</p>)}</div>
++      <div className="admin-preview"><p className="admin-eyebrow">Preview</p><h3>{content.profile.name}</h3>{content.profile.introduction.split(/\n{2,}/).filter(Boolean).map((paragraph, index) => <div className="prose-copy" key={index}><RichText>{paragraph}</RichText></div>)}</div>
+     </section>}
+     {section === 'posts' && <section className="admin-panel"><h2 className="admin-section-title">Writing</h2><p className="admin-hint">Drafts stay private until published.</p><button className="admin-button" onClick={() => change({ ...content, posts: [...content.posts, { id: makeId(), title: '', slug: '', date: '', description: '', body: '', published: false }] })} data-testid="button-add-post">Add writing</button>
+       {content.posts.length === 0 && <div className="admin-empty" data-testid="status-admin-posts-empty">No writing yet.</div>}
+-      {content.posts.map((post, index) => <article className="admin-card" key={post.id} data-testid={`card-admin-post-${post.id}`}><div className="admin-card-head"><h3 className="admin-card-title">{post.title || 'Untitled writing'}</h3><span className={`admin-badge ${post.published ? 'live' : ''}`}>{post.published ? 'Published' : 'Unpublished'}</span></div><div className="admin-grid"><Field label="Title" value={post.title} testId={`input-post-title-${post.id}`} onChange={(title) => change({ ...content, posts: content.posts.map((item) => item.id === post.id ? { ...item, title } : item) })} /><Field label="Slug" value={post.slug} testId={`input-post-slug-${post.id}`} onChange={(slug) => change({ ...content, posts: content.posts.map((item) => item.id === post.id ? { ...item, slug } : item) })} /><Field label="Date" value={post.date} testId={`input-post-date-${post.id}`} onChange={(date) => change({ ...content, posts: content.posts.map((item) => item.id === post.id ? { ...item, date } : item) })} /><Field label="Description" value={post.description} testId={`input-post-description-${post.id}`} onChange={(description) => change({ ...content, posts: content.posts.map((item) => item.id === post.id ? { ...item, description } : item) })} /></div><div className="admin-field"><label htmlFor={`body-post-${post.id}`}>Body · Markdown-friendly</label><textarea id={`body-post-${post.id}`} value={post.body} onChange={(e) => change({ ...content, posts: content.posts.map((item) => item.id === post.id ? { ...item, body: e.target.value } : item) })} data-testid={`textarea-post-body-${post.id}`} /></div><div className="admin-actions"><button className="admin-button" onClick={() => change({ ...content, posts: content.posts.map((item) => item.id === post.id ? { ...item, published: !item.published } : item) })} data-testid={`button-toggle-post-${post.id}`}>{post.published ? 'Unpublish' : 'Publish'}</button><button className="admin-button danger" onClick={() => { if (window.confirm('Remove this writing from the editor?')) change({ ...content, posts: content.posts.filter((item) => item.id !== post.id) }); }} data-testid={`button-delete-post-${post.id}`}>Delete</button></div></article>)}
++      {content.posts.map((post, index) => <article className="admin-card" key={post.id} data-testid={`card-admin-post-${post.id}`}><div className="admin-card-head"><h3 className="admin-card-title">{post.title || 'Untitled writing'}</h3><span className={`admin-badge ${post.published ? 'live' : ''}`}>{post.published ? 'Published' : 'Unpublished'}</span></div><div className="admin-grid"><Field label="Title" value={post.title} testId={`input-post-title-${post.id}`} onChange={(title) => change({ ...content, posts: content.posts.map((item) => item.id === post.id ? { ...item, title } : item) })} /><Field label="Slug" value={post.slug} testId={`input-post-slug-${post.id}`} onChange={(slug) => change({ ...content, posts: content.posts.map((item) => item.id === post.id ? { ...item, slug } : item) })} /><Field label="Date" value={post.date} testId={`input-post-date-${post.id}`} onChange={(date) => change({ ...content, posts: content.posts.map((item) => item.id === post.id ? { ...item, date } : item) })} /><Field label="Description" value={post.description} testId={`input-post-description-${post.id}`} onChange={(description) => change({ ...content, posts: content.posts.map((item) => item.id === post.id ? { ...item, description } : item) })} /></div><ImageField label="Image" value={post.imageUrl} testId={`image-post-${post.id}`} onChange={(imageUrl) => change({ ...content, posts: content.posts.map((item) => item.id === post.id ? { ...item, imageUrl } : item) })} /><MarkdownTextarea label="Body · Markdown" value={post.body} testId={`textarea-post-body-${post.id}`} onChange={(body) => change({ ...content, posts: content.posts.map((item) => item.id === post.id ? { ...item, body } : item) })} /><div className="admin-actions"><button className="admin-button" onClick={() => change({ ...content, posts: content.posts.map((item) => item.id === post.id ? { ...item, published: !item.published } : item) })} data-testid={`button-toggle-post-${post.id}`}>{post.published ? 'Unpublish' : 'Publish'}</button><button className="admin-button danger" onClick={() => { if (window.confirm('Remove this writing from the editor?')) change({ ...content, posts: content.posts.filter((item) => item.id !== post.id) }); }} data-testid={`button-delete-post-${post.id}`}>Delete</button></div></article>)}
+     </section>}
+     {section === 'studies' && <section className="admin-panel"><h2 className="admin-section-title">Case studies</h2><p className="admin-hint">Keep project details concise and useful.</p><button className="admin-button" onClick={() => change({ ...content, caseStudies: [...content.caseStudies, { id: makeId(), title: '', slug: '', year: null, description: '', body: '', href: '', published: false }] })} data-testid="button-add-study">Add case study</button>
+       {content.caseStudies.length === 0 && <div className="admin-empty" data-testid="status-admin-studies-empty">No case studies yet.</div>}
+-      {content.caseStudies.map((study) => <article className="admin-card" key={study.id} data-testid={`card-admin-study-${study.id}`}><div className="admin-card-head"><h3 className="admin-card-title">{study.title || 'Untitled case study'}</h3><span className={`admin-badge ${study.published ? 'live' : ''}`}>{study.published ? 'Published' : 'Unpublished'}</span></div><div className="admin-grid"><Field label="Title" value={study.title} testId={`input-study-title-${study.id}`} onChange={(title) => change({ ...content, caseStudies: content.caseStudies.map((item) => item.id === study.id ? { ...item, title } : item) })} /><Field label="Slug" value={study.slug} testId={`input-study-slug-${study.id}`} onChange={(slug) => change({ ...content, caseStudies: content.caseStudies.map((item) => item.id === study.id ? { ...item, slug } : item) })} /><Field label="Year" type="number" value={study.year ?? ''} testId={`input-study-year-${study.id}`} onChange={(value) => change({ ...content, caseStudies: content.caseStudies.map((item) => item.id === study.id ? { ...item, year: value ? Number(value) : null } : item) })} /><Field label="External link" value={study.href} testId={`input-study-href-${study.id}`} onChange={(href) => change({ ...content, caseStudies: content.caseStudies.map((item) => item.id === study.id ? { ...item, href } : item) })} /></div><div className="admin-field"><label htmlFor={`description-study-${study.id}`}>Description</label><textarea id={`description-study-${study.id}`} value={study.description} onChange={(e) => change({ ...content, caseStudies: content.caseStudies.map((item) => item.id === study.id ? { ...item, description: e.target.value } : item) })} data-testid={`textarea-study-description-${study.id}`} /></div><div className="admin-field"><label htmlFor={`body-study-${study.id}`}>Body · Markdown-friendly</label><textarea id={`body-study-${study.id}`} value={study.body} onChange={(e) => change({ ...content, caseStudies: content.caseStudies.map((item) => item.id === study.id ? { ...item, body: e.target.value } : item) })} data-testid={`textarea-study-body-${study.id}`} /></div><div className="admin-actions"><button className="admin-button" onClick={() => change({ ...content, caseStudies: content.caseStudies.map((item) => item.id === study.id ? { ...item, published: !item.published } : item) })} data-testid={`button-toggle-study-${study.id}`}>{study.published ? 'Unpublish' : 'Publish'}</button><button className="admin-button danger" onClick={() => { if (window.confirm('Remove this case study from the editor?')) change({ ...content, caseStudies: content.caseStudies.filter((item) => item.id !== study.id) }); }} data-testid={`button-delete-study-${study.id}`}>Delete</button></div></article>)}
++      {content.caseStudies.map((study) => <article className="admin-card" key={study.id} data-testid={`card-admin-study-${study.id}`}><div className="admin-card-head"><h3 className="admin-card-title">{study.title || 'Untitled case study'}</h3><span className={`admin-badge ${study.published ? 'live' : ''}`}>{study.published ? 'Published' : 'Unpublished'}</span></div><div className="admin-grid"><Field label="Title" value={study.title} testId={`input-study-title-${study.id}`} onChange={(title) => change({ ...content, caseStudies: content.caseStudies.map((item) => item.id === study.id ? { ...item, title } : item) })} /><Field label="Slug" value={study.slug} testId={`input-study-slug-${study.id}`} onChange={(slug) => change({ ...content, caseStudies: content.caseStudies.map((item) => item.id === study.id ? { ...item, slug } : item) })} /><Field label="Year" type="number" value={study.year ?? ''} testId={`input-study-year-${study.id}`} onChange={(value) => change({ ...content, caseStudies: content.caseStudies.map((item) => item.id === study.id ? { ...item, year: value ? Number(value) : null } : item) })} /><Field label="External link" value={study.href} testId={`input-study-href-${study.id}`} onChange={(href) => change({ ...content, caseStudies: content.caseStudies.map((item) => item.id === study.id ? { ...item, href } : item) })} /></div><div className="admin-field"><label htmlFor={`description-study-${study.id}`}>Description</label><textarea id={`description-study-${study.id}`} value={study.description} onChange={(e) => change({ ...content, caseStudies: content.caseStudies.map((item) => item.id === study.id ? { ...item, description: e.target.value } : item) })} data-testid={`textarea-study-description-${study.id}`} /></div><ImageField label="Image" value={study.imageUrl} testId={`image-study-${study.id}`} onChange={(imageUrl) => change({ ...content, caseStudies: content.caseStudies.map((item) => item.id === study.id ? { ...item, imageUrl } : item) })} /><MarkdownTextarea label="Body · Markdown" value={study.body} testId={`textarea-study-body-${study.id}`} onChange={(body) => change({ ...content, caseStudies: content.caseStudies.map((item) => item.id === study.id ? { ...item, body } : item) })} /><div className="admin-actions"><button className="admin-button" onClick={() => change({ ...content, caseStudies: content.caseStudies.map((item) => item.id === study.id ? { ...item, published: !item.published } : item) })} data-testid={`button-toggle-study-${study.id}`}>{study.published ? 'Unpublish' : 'Publish'}</button><button className="admin-button danger" onClick={() => { if (window.confirm('Remove this case study from the editor?')) change({ ...content, caseStudies: content.caseStudies.filter((item) => item.id !== study.id) }); }} data-testid={`button-delete-study-${study.id}`}>Delete</button></div></article>)}
+     </section>}
+-    {section === 'books' && <section className="admin-panel"><h2 className="admin-section-title">Books</h2><p className="admin-hint">A shelf of titles you choose to share.</p><button className="admin-button" onClick={() => change({ ...content, books: [...content.books, { id: makeId(), title: '', author: '', note: '', href: '', published: false }] })} data-testid="button-add-book">Add a book</button>
++    {section === 'books' && <section className="admin-panel"><h2 className="admin-section-title">Books</h2><p className="admin-hint">A shelf of titles you choose to share.</p><BookCategoryManager content={content} change={change} /><button className="admin-button" onClick={() => change({ ...content, books: [...content.books, { id: makeId(), title: '', author: '', note: '', href: '', category: FALLBACK_CATEGORY, published: false }] })} data-testid="button-add-book">Add a book</button>
+       {content.books.length === 0 && <div className="admin-empty" data-testid="status-admin-books-empty">The shelf is empty.</div>}
+-      {content.books.map((book) => <article className="admin-card" key={book.id} data-testid={`card-admin-book-${book.id}`}><div className="admin-card-head"><h3 className="admin-card-title">{book.title || 'Untitled book'}</h3><span className={`admin-badge ${book.published ? 'live' : ''}`}>{book.published ? 'Published' : 'Unpublished'}</span></div><div className="admin-grid"><Field label="Title" value={book.title} testId={`input-book-title-${book.id}`} onChange={(title) => change({ ...content, books: content.books.map((item) => item.id === book.id ? { ...item, title } : item) })} /><Field label="Author" value={book.author} testId={`input-book-author-${book.id}`} onChange={(author) => change({ ...content, books: content.books.map((item) => item.id === book.id ? { ...item, author } : item) })} /><Field label="Link" value={book.href} testId={`input-book-href-${book.id}`} onChange={(href) => change({ ...content, books: content.books.map((item) => item.id === book.id ? { ...item, href } : item) })} /></div><div className="admin-field"><label htmlFor={`note-book-${book.id}`}>Note</label><textarea id={`note-book-${book.id}`} value={book.note} onChange={(e) => change({ ...content, books: content.books.map((item) => item.id === book.id ? { ...item, note: e.target.value } : item) })} data-testid={`textarea-book-note-${book.id}`} /></div><div className="admin-actions"><button className="admin-button" onClick={() => change({ ...content, books: content.books.map((item) => item.id === book.id ? { ...item, published: !item.published } : item) })} data-testid={`button-toggle-book-${book.id}`}>{book.published ? 'Unpublish' : 'Publish'}</button><button className="admin-button danger" onClick={() => { if (window.confirm('Remove this book from the editor?')) change({ ...content, books: content.books.filter((item) => item.id !== book.id) }); }} data-testid={`button-delete-book-${book.id}`}>Remove</button></div></article>)}
++      {content.books.map((book) => <article className="admin-card" key={book.id} data-testid={`card-admin-book-${book.id}`}><div className="admin-card-head"><h3 className="admin-card-title">{book.title || 'Untitled book'}</h3><span className={`admin-badge ${book.published ? 'live' : ''}`}>{book.published ? 'Published' : 'Unpublished'}</span></div><div className="admin-grid"><Field label="Title" value={book.title} testId={`input-book-title-${book.id}`} onChange={(title) => change({ ...content, books: content.books.map((item) => item.id === book.id ? { ...item, title } : item) })} /><Field label="Author" value={book.author} testId={`input-book-author-${book.id}`} onChange={(author) => change({ ...content, books: content.books.map((item) => item.id === book.id ? { ...item, author } : item) })} /><Field label="Link" value={book.href} testId={`input-book-href-${book.id}`} onChange={(href) => change({ ...content, books: content.books.map((item) => item.id === book.id ? { ...item, href } : item) })} /><div className="admin-field"><label htmlFor={`category-book-${book.id}`}>Category</label><select id={`category-book-${book.id}`} value={resolveCategories(content.bookCategories).find((name) => name.toLowerCase() === (book.category ?? '').trim().toLowerCase()) ?? FALLBACK_CATEGORY} onChange={(e) => change({ ...content, books: content.books.map((item) => item.id === book.id ? { ...item, category: e.target.value } : item) })} data-testid={`select-book-category-${book.id}`}>{resolveCategories(content.bookCategories).map((name) => <option key={name} value={name}>{name}</option>)}</select></div></div><ImageField label="Cover image (small)" value={book.imageUrl} testId={`image-book-${book.id}`} onChange={(imageUrl) => change({ ...content, books: content.books.map((item) => item.id === book.id ? { ...item, imageUrl } : item) })} /><div className="admin-field"><label htmlFor={`note-book-${book.id}`}>Note · Markdown links allowed</label><textarea id={`note-book-${book.id}`} value={book.note} onChange={(e) => change({ ...content, books: content.books.map((item) => item.id === book.id ? { ...item, note: e.target.value } : item) })} data-testid={`textarea-book-note-${book.id}`} /></div><div className="admin-actions"><button className="admin-button" onClick={() => change({ ...content, books: content.books.map((item) => item.id === book.id ? { ...item, published: !item.published } : item) })} data-testid={`button-toggle-book-${book.id}`}>{book.published ? 'Unpublish' : 'Publish'}</button><button className="admin-button danger" onClick={() => { if (window.confirm('Remove this book from the editor?')) change({ ...content, books: content.books.filter((item) => item.id !== book.id) }); }} data-testid={`button-delete-book-${book.id}`}>Remove</button></div></article>)}
+     </section>}
+-    {section === 'appearance' && <section className="admin-panel"><h2 className="admin-section-title">Appearance</h2><p className="admin-hint">Small adjustments to the public pages’ typography and color.</p><div className="admin-grid">
+-      <ColorField label="Background color" value={content.appearance.backgroundColor} testId="input-appearance-background" onChange={(backgroundColor) => change({ ...content, appearance: { ...content.appearance, backgroundColor } })} />
+-      <ColorField label="Text color" value={content.appearance.textColor} testId="input-appearance-text" onChange={(textColor) => change({ ...content, appearance: { ...content.appearance, textColor } })} />
+-      <ColorField label="Accent color" value={content.appearance.accentColor} testId="input-appearance-accent" onChange={(accentColor) => change({ ...content, appearance: { ...content.appearance, accentColor } })} />
+-      <div className="admin-field"><label htmlFor="appearance-font">Typeface</label><select id="appearance-font" value={content.appearance.font} onChange={(e) => change({ ...content, appearance: { ...content.appearance, font: e.target.value as SiteContent['appearance']['font'] } })} data-testid="select-appearance-font"><option value="system">Sans serif</option><option value="serif">Serif</option><option value="mono">Monospace</option></select></div>
+-      <div className="admin-field"><label htmlFor="appearance-width">Content width · {content.appearance.contentWidth}px</label><input id="appearance-width" type="range" min="480" max="1000" step="10" value={content.appearance.contentWidth} onChange={(e) => change({ ...content, appearance: { ...content.appearance, contentWidth: Number(e.target.value) } })} data-testid="input-appearance-width" /></div>
+-    </div><div className="admin-preview" style={{ backgroundColor: content.appearance.backgroundColor, color: content.appearance.textColor, maxWidth: content.appearance.contentWidth }}><p className="admin-eyebrow">Preview</p><h3 style={{ color: content.appearance.accentColor }}>A little change in tone.</h3><p>This is how the site’s colors and type settings come together.</p></div></section>}
++    {section === 'appearance' && <AppearancePanel content={content} change={change} />}
++    {section === 'messages' && <MessagesPanel />}
+   </div></div>;
+ }
+ 
+@@ -143,8 +147,5 @@ function Field({ label, value, onChange, testId, type = 'text' }: { label: strin
+   return <div className="admin-field"><label htmlFor={testId}>{label}</label><input id={testId} type={type} value={value} onChange={(event) => onChange(event.target.value)} data-testid={testId} /></div>;
+ }
+ 
+-function ColorField({ label, value, onChange, testId }: { label: string; value: string; onChange: (value: string) => void; testId: string }) {
+-  return <div className="admin-field"><label htmlFor={testId}>{label}</label><div className="admin-color-input"><input id={testId} type="color" value={/^#[0-9a-f]{6}$/i.test(value) ? value : '#587b79'} onChange={(event) => onChange(event.target.value)} data-testid={testId} /><input aria-label={`${label} hex value`} value={value} onChange={(event) => onChange(event.target.value)} data-testid={`${testId}-text`} /></div></div>;
+-}
+ 
+ export default Admin;
+diff --git a/artifacts/ashfa-aqeel-website/src/pages/blog.tsx b/artifacts/ashfa-aqeel-website/src/pages/blog.tsx
+index 44dab1e..70990f6 100644
+--- a/artifacts/ashfa-aqeel-website/src/pages/blog.tsx
++++ b/artifacts/ashfa-aqeel-website/src/pages/blog.tsx
+@@ -1,5 +1,5 @@
+-import ReactMarkdown from 'react-markdown';
+ import { useGetPublicContent } from '@workspace/api-client-react';
++import { InlineRichText, RichText } from '@/components/rich-text';
+ import { usePageMeta } from '@/hooks/use-page-meta';
+ 
+ export default function Blog() {
+@@ -8,5 +8,5 @@ export default function Blog() {
+   if (query.isLoading) return <div className="loading-state" role="status" data-testid="status-blog-loading">Gathering the writing…</div>;
+   if (query.isError || !query.data) return <div className="empty-state" role="alert" data-testid="status-blog-error"><p className="empty-title">The writing could not be loaded.</p><button className="retry-button" onClick={() => query.refetch()} data-testid="button-retry-blog">Try again</button></div>;
+   const posts = query.data.posts.filter((post) => post.published);
+-  return <><h1 className="page-title" data-testid="text-page-title">Blog</h1><p className="page-intro">Notes and writing.</p>{posts.length === 0 ? <div className="empty-state" role="status" data-testid="status-blog-empty"><p className="empty-title">Nothing here just yet.</p></div> : <ol className="entry-list">{posts.map((post) => <li className="entry-row" key={post.id} data-testid={`row-post-${post.id}`}><time>{post.date}</time><div><span className="entry-title" data-testid={`text-post-title-${post.id}`}>{post.title}</span>{post.description && <p>{post.description}</p>}{post.body && <div className="markdown-body" data-testid={`text-post-body-${post.id}`}><ReactMarkdown>{post.body}</ReactMarkdown></div>}</div></li>)}</ol>}</>;
++  return <><h1 className="page-title" data-testid="text-page-title">Blog</h1><p className="page-intro">Notes and writing.</p>{posts.length === 0 ? <div className="empty-state" role="status" data-testid="status-blog-empty"><p className="empty-title">Nothing here just yet.</p></div> : <ol className="entry-list">{posts.map((post) => <li className="entry-row" key={post.id} data-testid={`row-post-${post.id}`}><time>{post.date}</time><div><span className="entry-title" data-testid={`text-post-title-${post.id}`}>{post.title}</span>{post.imageUrl && <img className="entry-image" src={post.imageUrl} alt="" loading="lazy" decoding="async" data-testid={`img-post-${post.id}`} />}{post.description && <p><InlineRichText>{post.description}</InlineRichText></p>}{post.body && <div className="markdown-body" data-testid={`text-post-body-${post.id}`}><RichText>{post.body}</RichText></div>}</div></li>)}</ol>}</>;
+ }
+diff --git a/artifacts/ashfa-aqeel-website/src/pages/books.tsx b/artifacts/ashfa-aqeel-website/src/pages/books.tsx
+index ac2775d..6a08dff 100644
+--- a/artifacts/ashfa-aqeel-website/src/pages/books.tsx
++++ b/artifacts/ashfa-aqeel-website/src/pages/books.tsx
+@@ -1,5 +1,7 @@
+ import { useGetPublicContent } from '@workspace/api-client-react';
++import { InlineRichText } from '@/components/rich-text';
+ import { usePageMeta } from '@/hooks/use-page-meta';
++import { groupBooks } from '@/lib/books';
+ 
+ export default function Books() {
+   usePageMeta('Books — Ashfa Aqeel', 'Books shared by Ashfa Aqeel.');
+@@ -7,5 +9,26 @@ export default function Books() {
+   if (query.isLoading) return <div className="loading-state" role="status" data-testid="status-books-loading">Opening the shelf…</div>;
+   if (query.isError || !query.data) return <div className="empty-state" role="alert" data-testid="status-books-error"><p className="empty-title">The shelf could not be loaded.</p><button className="retry-button" onClick={() => query.refetch()} data-testid="button-retry-books">Try again</button></div>;
+   const books = query.data.books.filter((book) => book.published);
+-  return <><h1 className="page-title" data-testid="text-page-title">Books</h1><p className="page-intro">A small shelf of books I choose to share.</p>{books.length === 0 ? <div className="empty-state" role="status" data-testid="status-books-empty"><p className="empty-title">The shelf is empty for now.</p></div> : <ol className="book-list">{books.map((book) => <li className="book-row" key={book.id} data-testid={`row-book-${book.id}`}><div>{book.href ? <a className="book-title" href={book.href} data-testid={`link-book-${book.id}`}>{book.title}</a> : <p className="book-title">{book.title}</p>}<p className="book-author">{book.author}</p>{book.note && <p className="book-note">{book.note}</p>}</div></li>)}</ol>}</>;
++  const groups = groupBooks(books, query.data.bookCategories);
++  return <>
++    <h1 className="page-title" data-testid="text-page-title">Books</h1>
++    <p className="page-intro">A small shelf of books I choose to share.</p>
++    {books.length === 0 ? <div className="empty-state" role="status" data-testid="status-books-empty"><p className="empty-title">The shelf is empty for now.</p></div> : groups.map((group) => (
++      <section className="book-group" key={group.category} aria-labelledby={`books-${group.category.replace(/\W+/g, '-')}`} data-testid={`group-books-${group.category}`}>
++        <h2 className="section-label" id={`books-${group.category.replace(/\W+/g, '-')}`}>{group.category}</h2>
++        <ol className="book-list">{group.books.map((book) => (
++          <li className={`book-row${book.imageUrl ? ' has-cover' : ''}`} key={book.id} data-testid={`row-book-${book.id}`}>
++            {book.imageUrl && <img className="book-cover" src={book.imageUrl} alt={`Cover of ${book.title}`} loading="lazy" decoding="async" data-testid={`img-book-${book.id}`} />}
++            <div>
++              <p className="book-line">
++                {book.href ? <a className="book-title" href={book.href} data-testid={`link-book-${book.id}`}>{book.title}</a> : <span className="book-title">{book.title}</span>}
++                {book.author && <span className="book-author"> — {book.author}</span>}
++              </p>
++              {book.note && <p className="book-note"><InlineRichText>{book.note}</InlineRichText></p>}
++            </div>
++          </li>
++        ))}</ol>
++      </section>
++    ))}
++  </>;
+ }
+diff --git a/artifacts/ashfa-aqeel-website/src/pages/case-study.tsx b/artifacts/ashfa-aqeel-website/src/pages/case-study.tsx
+index b26092e..c560d85 100644
+--- a/artifacts/ashfa-aqeel-website/src/pages/case-study.tsx
++++ b/artifacts/ashfa-aqeel-website/src/pages/case-study.tsx
+@@ -1,5 +1,5 @@
+-import ReactMarkdown from 'react-markdown';
+ import { useGetPublicContent } from '@workspace/api-client-react';
++import { InlineRichText, RichText } from '@/components/rich-text';
+ import { usePageMeta } from '@/hooks/use-page-meta';
+ 
+ export default function CaseStudy() {
+@@ -8,5 +8,5 @@ export default function CaseStudy() {
+   if (query.isLoading) return <div className="loading-state" role="status" data-testid="status-studies-loading">Loading selected work…</div>;
+   if (query.isError || !query.data) return <div className="empty-state" role="alert" data-testid="status-studies-error"><p className="empty-title">Selected work could not be loaded.</p><button className="retry-button" onClick={() => query.refetch()} data-testid="button-retry-studies">Try again</button></div>;
+   const studies = query.data.caseStudies.filter((study) => study.published);
+-  return <><h1 className="page-title" data-testid="text-page-title">Case Study</h1><p className="page-intro">A closer look at selected work.</p>{studies.length === 0 ? <div className="empty-state" role="status" data-testid="status-case-studies-empty"><p className="empty-title">No case studies yet.</p></div> : <ol className="entry-list">{studies.map((study) => <li className="entry-row" key={study.id} data-testid={`row-case-study-${study.id}`}>{study.year && <time>{study.year}</time>}<div>{study.href ? <a href={study.href} data-testid={`link-case-study-${study.id}`}>{study.title}</a> : <span className="entry-title">{study.title}</span>}{study.description && <p>{study.description}</p>}{study.body && <div className="markdown-body" data-testid={`text-case-study-body-${study.id}`}><ReactMarkdown>{study.body}</ReactMarkdown></div>}</div></li>)}</ol>}</>;
++  return <><h1 className="page-title" data-testid="text-page-title">Case Study</h1><p className="page-intro">A closer look at selected work.</p>{studies.length === 0 ? <div className="empty-state" role="status" data-testid="status-case-studies-empty"><p className="empty-title">No case studies yet.</p></div> : <ol className="entry-list">{studies.map((study) => <li className="entry-row" key={study.id} data-testid={`row-case-study-${study.id}`}>{study.year && <time>{study.year}</time>}<div>{study.href ? <a href={study.href} data-testid={`link-case-study-${study.id}`}>{study.title}</a> : <span className="entry-title">{study.title}</span>}{study.imageUrl && <img className="entry-image" src={study.imageUrl} alt="" loading="lazy" decoding="async" data-testid={`img-case-study-${study.id}`} />}{study.description && <p><InlineRichText>{study.description}</InlineRichText></p>}{study.body && <div className="markdown-body" data-testid={`text-case-study-body-${study.id}`}><RichText>{study.body}</RichText></div>}</div></li>)}</ol>}</>;
+ }
+diff --git a/artifacts/ashfa-aqeel-website/src/pages/home.tsx b/artifacts/ashfa-aqeel-website/src/pages/home.tsx
+index 1eb7483..3b32c92 100644
+--- a/artifacts/ashfa-aqeel-website/src/pages/home.tsx
++++ b/artifacts/ashfa-aqeel-website/src/pages/home.tsx
+@@ -1,7 +1,21 @@
+ import { useGetPublicContent } from '@workspace/api-client-react';
++import { useContactDialog } from '@/components/contact-dialog';
++import { InlineRichText, RichText } from '@/components/rich-text';
+ import { usePageMeta } from '@/hooks/use-page-meta';
+ 
++/**
++ * Entries that should open the contact form: placeholder or legacy contact links
++ * (#, #contact, /contact), or an entry named like a contact CTA that has no address.
++ * Real links, including mailto:, are left exactly as they are.
++ */
++const isContactLink = (place: { platform: string; label: string; href: string }) => {
++  const href = place.href.trim();
++  if (/^(#|#contact|\/contact\/?|contact)$/i.test(href)) return true;
++  return href === '' && /contact|get in touch|say hello|message me/i.test(`${place.platform} ${place.label}`);
++};
++
+ export default function Home() {
++  const { openContact } = useContactDialog();
+   usePageMeta('Ashfa Aqeel', 'A personal website for Ashfa Aqeel.');
+   const query = useGetPublicContent();
+   if (query.isLoading) return <div className="loading-state" role="status" data-testid="status-home-loading">Loading Ashfa’s site…</div>;
+@@ -12,10 +26,10 @@ export default function Home() {
+     <h1 className="page-title" data-testid="text-page-title">{profile.name}</h1>
+     <section className="section" aria-labelledby="background-heading">
+       <h2 className="section-label" id="background-heading">My background story</h2>
+-      {paragraphs.length === 0 ? <p className="empty-inline" role="status" data-testid="status-story-empty">Nothing here just yet.</p> : paragraphs.map((paragraph, index) => <p className="prose-copy" key={`${index}-${paragraph.slice(0, 14)}`} data-testid={`text-story-${index + 1}`}>{paragraph}</p>)}
++      {paragraphs.length === 0 ? <p className="empty-inline" role="status" data-testid="status-story-empty">Nothing here just yet.</p> : paragraphs.map((paragraph, index) => <div className="prose-copy" key={`${index}-${paragraph.slice(0, 14)}`} data-testid={`text-story-${index + 1}`}><RichText>{paragraph}</RichText></div>)}
+     </section>
+-    <section className="section" aria-labelledby="journey-heading"><h2 className="section-label" id="journey-heading">My Journey</h2>{profile.journey.length === 0 ? <p className="empty-inline" role="status" data-testid="status-journey-empty">Nothing here just yet.</p> : <ol className="journey">{profile.journey.map((item, index) => <li key={`${item.age}-${index}`} data-testid={`row-journey-${index + 1}`}><span className="journey-age">{item.age}</span><span>{item.milestone}</span></li>)}</ol>}</section>
+-    <section className="section" aria-labelledby="interests-heading"><h2 className="section-label" id="interests-heading">What I'm Into</h2>{profile.interests.length === 0 ? <p className="empty-inline" role="status" data-testid="status-interests-empty">Nothing here just yet.</p> : <ul className="interest-list">{profile.interests.map((interest, index) => <li key={`${interest}-${index}`} data-testid={`text-interest-${index + 1}`}>{interest}</li>)}</ul>}</section>
+-    <section className="section" aria-labelledby="find-me-heading"><h2 className="section-label" id="find-me-heading">Where to Find Me</h2>{profile.placesToFindMe.length === 0 ? <p className="empty-inline" role="status" data-testid="status-links-empty">Nothing here just yet.</p> : <ul className="social-list">{profile.placesToFindMe.map((place, index) => <li key={`${place.platform}-${index}`} data-testid={`row-social-${index + 1}`}><span className="social-name">{place.platform}</span><span>{place.href ? <a href={place.href} data-testid={`link-social-${index + 1}`} target={place.href.startsWith('http') ? '_blank' : undefined} rel={place.href.startsWith('http') ? 'noreferrer' : undefined}>{place.label}</a> : place.label}</span></li>)}</ul>}</section>
++    <section className="section" aria-labelledby="journey-heading"><h2 className="section-label" id="journey-heading">My Journey</h2>{profile.journey.length === 0 ? <p className="empty-inline" role="status" data-testid="status-journey-empty">Nothing here just yet.</p> : <ol className="journey">{profile.journey.map((item, index) => <li key={`${item.age}-${index}`} data-testid={`row-journey-${index + 1}`}><span className="journey-age">{item.age}</span><span><InlineRichText>{item.milestone}</InlineRichText></span></li>)}</ol>}</section>
++    <section className="section" aria-labelledby="interests-heading"><h2 className="section-label" id="interests-heading">What I'm Into</h2>{profile.interests.length === 0 ? <p className="empty-inline" role="status" data-testid="status-interests-empty">Nothing here just yet.</p> : <ul className="interest-list">{profile.interests.map((interest, index) => <li key={`${interest}-${index}`} data-testid={`text-interest-${index + 1}`}><InlineRichText>{interest}</InlineRichText></li>)}</ul>}</section>
++    <section className="section" aria-labelledby="find-me-heading"><h2 className="section-label" id="find-me-heading">Where to Find Me</h2>{profile.placesToFindMe.length === 0 ? <p className="empty-inline" role="status" data-testid="status-links-empty">Nothing here just yet.</p> : <ul className="social-list">{profile.placesToFindMe.map((place, index) => <li key={`${place.platform}-${index}`} data-testid={`row-social-${index + 1}`}><span className="social-name">{place.platform}</span><span>{isContactLink(place) ? <button type="button" className="inline-link-button" onClick={openContact} data-testid={`button-social-contact-${index + 1}`}>{place.label}</button> : place.href ? <a href={place.href} data-testid={`link-social-${index + 1}`} target={place.href.startsWith('http') ? '_blank' : undefined} rel={place.href.startsWith('http') ? 'noreferrer' : undefined}>{place.label}</a> : place.label}</span></li>)}</ul>}</section>
+   </>;
+ }
+diff --git a/lib/api-client-react/src/generated/api.schemas.ts b/lib/api-client-react/src/generated/api.schemas.ts
+index e440825..b34b225 100644
+--- a/lib/api-client-react/src/generated/api.schemas.ts
++++ b/lib/api-client-react/src/generated/api.schemas.ts
+@@ -59,6 +59,24 @@ export interface AppearanceSettings {
+      * @maximum 1000
+      */
+   contentWidth: number;
++  /** @maxLength 40 */
++  headingFont?: string;
++  /** @maxLength 40 */
++  bodyFont?: string;
++  /**
++     * @minimum 16
++     * @maximum 64
++     */
++  headingSize?: number;
++  /**
++     * @minimum 10
++     * @maximum 24
++     */
++  bodySize?: number;
++  /** @pattern ^#[0-9a-fA-F]{6}$ */
++  headingColor?: string;
++  /** @pattern ^#[0-9a-fA-F]{6}$ */
++  linkColor?: string;
+ }
+ 
+ export interface BlogPost {
+@@ -68,6 +86,7 @@ export interface BlogPost {
+   date: string;
+   description: string;
+   body: string;
++  imageUrl?: string;
+   published: boolean;
+ }
+ 
+@@ -80,6 +99,7 @@ export interface CaseStudy {
+   description: string;
+   body: string;
+   href: string;
++  imageUrl?: string;
+   published: boolean;
+ }
+ 
+@@ -89,6 +109,9 @@ export interface Book {
+   author: string;
+   note: string;
+   href: string;
++  /** @maxLength 60 */
++  category?: string;
++  imageUrl?: string;
+   published: boolean;
+ }
+ 
+@@ -98,5 +121,47 @@ export interface SiteContent {
+   posts: BlogPost[];
+   caseStudies: CaseStudy[];
+   books: Book[];
++  /**
++     * @maxItems 30
++     * @items.minLength 1
++     * @items.maxLength 60
++     */
++  bookCategories?: string[];
++}
++
++export interface ContactMessageInput {
++  /**
++     * @minLength 1
++     * @maxLength 100
++     */
++  name: string;
++  /** @maxLength 200 */
++  email: string;
++  /**
++     * @minLength 10
++     * @maxLength 5000
++     */
++  message: string;
++  /** Honeypot field. Must be empty. */
++  website?: string;
++}
++
++export interface ContactResult {
++  ok: boolean;
++}
++
++export interface ContactMessage {
++  id: number;
++  name: string;
++  email: string;
++  message: string;
++  createdAt: string;
++  emailed: boolean;
++  /** @nullable */
++  emailError: string | null;
++}
++
++export interface DeleteResult {
++  ok: boolean;
+ }
+ 
+diff --git a/lib/api-client-react/src/generated/api.ts b/lib/api-client-react/src/generated/api.ts
+index 397e62e..fe2e2b5 100644
+--- a/lib/api-client-react/src/generated/api.ts
++++ b/lib/api-client-react/src/generated/api.ts
+@@ -26,6 +26,10 @@ import type {
+ 
+ import type {
+   AdminLogin,
++  ContactMessage,
++  ContactMessageInput,
++  ContactResult,
++  DeleteResult,
+   HealthStatus,
+   SessionStatus,
+   SiteContent
+@@ -713,3 +717,266 @@ export const useUpdateAdminContent = <TError = ErrorType<void>,
+       return useMutation(getUpdateAdminContentMutationOptions(options), queryClient);
+     }
+ 
++export const getSendContactMessageUrl = () => {
++
++
++
++
++  return `/api/contact`
++}
++
++/**
++ * @summary Send a message to the site owner
++ */
++export const sendContactMessage = async (contactMessageInput: ContactMessageInput, options?: Parameters<typeof customFetch>[1]): Promise<ContactResult> => {
++
++    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
++    if (!h) return {};
++    if (h instanceof Headers) return Object.fromEntries(h.entries());
++    if (Symbol.iterator in h) {
++      return Object.fromEntries(
++        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
++      );
++    }
++    const headers: Record<string, string | readonly string[]> = {};
++    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
++      if (value !== undefined) headers[name] = value;
++    }
++    return headers;
++  };
++return customFetch<ContactResult>(getSendContactMessageUrl(),
++  {
++    ...options,
++    method: 'POST',
++    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
++    body: JSON.stringify(contactMessageInput)
++  }
++);}
++
++
++
++
++
++export const getSendContactMessageMutationKey = () => ['sendContactMessage'] as const;
++
++export const getSendContactMessageMutationOptions = <TError = ErrorType<void>,
++    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof sendContactMessage>>, TError,SendContactMessageMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
++): UseMutationOptions<Awaited<ReturnType<typeof sendContactMessage>>, TError,SendContactMessageMutationVariables, TContext> => {
++
++const mutationKey = getSendContactMessageMutationKey();
++const {mutation: mutationOptions, request: requestOptions} = options ?
++      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
++      options
++      : {...options, mutation: {...options.mutation, mutationKey}}
++      : {mutation: { mutationKey, }, request: undefined};
++
++
++
++
++      const mutationFn: MutationFunction<Awaited<ReturnType<typeof sendContactMessage>>, SendContactMessageMutationVariables> = (props) => {
++          const {data} = props ?? {};
++
++          return  sendContactMessage(data,requestOptions)
++        }
++
++
++
++
++
++
++  return  { mutationFn, ...mutationOptions }}
++
++    export type SendContactMessageMutationResult = NonNullable<Awaited<ReturnType<typeof sendContactMessage>>>
++    export type SendContactMessageMutationBody = BodyType<ContactMessageInput>
++    export type SendContactMessageMutationError = ErrorType<void>
++    export type SendContactMessageMutationVariables = {data: BodyType<ContactMessageInput>}
++
++    /**
++ * @summary Send a message to the site owner
++ */
++export const useSendContactMessage = <TError = ErrorType<void>,
++    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof sendContactMessage>>, TError,SendContactMessageMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
++ , queryClient?: QueryClient): UseMutationResult<
++        Awaited<ReturnType<typeof sendContactMessage>>,
++        TError,
++        SendContactMessageMutationVariables,
++        TContext
++      > => {
++      return useMutation(getSendContactMessageMutationOptions(options), queryClient);
++    }
++
++export const getListContactMessagesUrl = () => {
++
++
++
++
++  return `/api/admin/messages`
++}
++
++/**
++ * @summary List received contact messages
++ */
++export const listContactMessages = async ( options?: Parameters<typeof customFetch>[1]): Promise<ContactMessage[]> => {
++
++  return customFetch<ContactMessage[]>(getListContactMessagesUrl(),
++  {
++    ...options,
++    method: 'GET'
++
++
++  }
++);}
++
++
++
++
++
++export const getListContactMessagesQueryKey = () => {
++    return [
++    `/api/admin/messages`
++    ] as const;
++    }
++
++
++export const getListContactMessagesQueryOptions = <TData = Awaited<ReturnType<typeof listContactMessages>>, TError = ErrorType<void>>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listContactMessages>>, TError, TData>>, request?: SecondParameter<typeof customFetch>}
++) => {
++
++const {query: queryOptions, request: requestOptions} = options ?? {};
++
++  const queryKey =  queryOptions?.queryKey ?? getListContactMessagesQueryKey();
++
++
++
++    const queryFn: QueryFunction<Awaited<ReturnType<typeof listContactMessages>>> = ({ signal }) => listContactMessages({ signal, ...requestOptions });
++
++
++
++
++
++   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listContactMessages>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
++}
++
++export type ListContactMessagesQueryResult = NonNullable<Awaited<ReturnType<typeof listContactMessages>>>
++export type ListContactMessagesQueryError = ErrorType<void>
++
++
++export function useListContactMessages<TData = Awaited<ReturnType<typeof listContactMessages>>, TError = ErrorType<void>>(
++  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listContactMessages>>, TError, TData>> & Pick<
++        DefinedInitialDataOptions<
++          Awaited<ReturnType<typeof listContactMessages>>,
++          TError,
++          Awaited<ReturnType<typeof listContactMessages>>
++        > , 'initialData'
++      >, request?: SecondParameter<typeof customFetch>}
++ , queryClient?: QueryClient
++  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
++export function useListContactMessages<TData = Awaited<ReturnType<typeof listContactMessages>>, TError = ErrorType<void>>(
++  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listContactMessages>>, TError, TData>> & Pick<
++        UndefinedInitialDataOptions<
++          Awaited<ReturnType<typeof listContactMessages>>,
++          TError,
++          Awaited<ReturnType<typeof listContactMessages>>
++        > , 'initialData'
++      >, request?: SecondParameter<typeof customFetch>}
++ , queryClient?: QueryClient
++  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
++export function useListContactMessages<TData = Awaited<ReturnType<typeof listContactMessages>>, TError = ErrorType<void>>(
++  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listContactMessages>>, TError, TData>>, request?: SecondParameter<typeof customFetch>}
++ , queryClient?: QueryClient
++  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
++/**
++ * @summary List received contact messages
++ */
++
++export function useListContactMessages<TData = Awaited<ReturnType<typeof listContactMessages>>, TError = ErrorType<void>>(
++  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listContactMessages>>, TError, TData>>, request?: SecondParameter<typeof customFetch>}
++ , queryClient?: QueryClient
++ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
++
++  const queryOptions = getListContactMessagesQueryOptions(options)
++
++  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
++
++  return withQueryKey(query, queryOptions.queryKey);
++}
++
++
++
++
++
++
++
++export const getDeleteContactMessageUrl = (id: number,) => {
++
++
++
++
++  return `/api/admin/messages/${id}`
++}
++
++/**
++ * @summary Delete a received contact message
++ */
++export const deleteContactMessage = async (id: number, options?: Parameters<typeof customFetch>[1]): Promise<DeleteResult> => {
++
++  return customFetch<DeleteResult>(getDeleteContactMessageUrl(id),
++  {
++    ...options,
++    method: 'DELETE'
++
++
++  }
++);}
++
++
++
++
++
++export const getDeleteContactMessageMutationKey = () => ['deleteContactMessage'] as const;
++
++export const getDeleteContactMessageMutationOptions = <TError = ErrorType<void>,
++    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteContactMessage>>, TError,DeleteContactMessageMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
++): UseMutationOptions<Awaited<ReturnType<typeof deleteContactMessage>>, TError,DeleteContactMessageMutationVariables, TContext> => {
++
++const mutationKey = getDeleteContactMessageMutationKey();
++const {mutation: mutationOptions, request: requestOptions} = options ?
++      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
++      options
++      : {...options, mutation: {...options.mutation, mutationKey}}
++      : {mutation: { mutationKey, }, request: undefined};
++
++
++
++
++      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteContactMessage>>, DeleteContactMessageMutationVariables> = (props) => {
++          const {id} = props ?? {};
++
++          return  deleteContactMessage(id,requestOptions)
++        }
++
++
++
++
++
++
++  return  { mutationFn, ...mutationOptions }}
++
++    export type DeleteContactMessageMutationResult = NonNullable<Awaited<ReturnType<typeof deleteContactMessage>>>
++
++    export type DeleteContactMessageMutationError = ErrorType<void>
++    export type DeleteContactMessageMutationVariables = {id: number}
++
++    /**
++ * @summary Delete a received contact message
++ */
++export const useDeleteContactMessage = <TError = ErrorType<void>,
++    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteContactMessage>>, TError,DeleteContactMessageMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
++ , queryClient?: QueryClient): UseMutationResult<
++        Awaited<ReturnType<typeof deleteContactMessage>>,
++        TError,
++        DeleteContactMessageMutationVariables,
++        TContext
++      > => {
++      return useMutation(getDeleteContactMessageMutationOptions(options), queryClient);
++    }
++
+diff --git a/lib/api-spec/openapi.yaml b/lib/api-spec/openapi.yaml
+index a937e8a..207b315 100644
+--- a/lib/api-spec/openapi.yaml
++++ b/lib/api-spec/openapi.yaml
+@@ -14,6 +14,8 @@ tags:
+     description: Public and private website content
+   - name: auth
+     description: Single-admin session
++  - name: contact
++    description: Visitor messages
+ paths:
+   /healthz:
+     get:
+@@ -119,6 +121,64 @@ paths:
+           description: Invalid content
+         "401":
+           description: Admin session required
++  /contact:
++    post:
++      operationId: sendContactMessage
++      tags: [contact]
++      summary: Send a message to the site owner
++      requestBody:
++        required: true
++        content:
++          application/json:
++            schema:
++              $ref: "#/components/schemas/ContactMessageInput"
++      responses:
++        "200":
++          description: Message received
++          content:
++            application/json:
++              schema:
++                $ref: "#/components/schemas/ContactResult"
++        "400":
++          description: Invalid message
++        "429":
++          description: Too many messages
++  /admin/messages:
++    get:
++      operationId: listContactMessages
++      tags: [contact]
++      summary: List received contact messages
++      responses:
++        "200":
++          description: Received messages, newest first
++          content:
++            application/json:
++              schema:
++                type: array
++                items:
++                  $ref: "#/components/schemas/ContactMessage"
++        "401":
++          description: Admin session required
++  /admin/messages/{id}:
++    delete:
++      operationId: deleteContactMessage
++      tags: [contact]
++      summary: Delete a received contact message
++      parameters:
++        - name: id
++          in: path
++          required: true
++          schema:
++            type: integer
++      responses:
++        "200":
++          description: Deleted
++          content:
++            application/json:
++              schema:
++                $ref: "#/components/schemas/DeleteResult"
++        "401":
++          description: Admin session required
+ components:
+   schemas:
+     HealthStatus:
+@@ -200,6 +260,26 @@ components:
+           type: integer
+           minimum: 480
+           maximum: 1000
++        headingFont:
++          type: string
++          maxLength: 40
++        bodyFont:
++          type: string
++          maxLength: 40
++        headingSize:
++          type: integer
++          minimum: 16
++          maximum: 64
++        bodySize:
++          type: integer
++          minimum: 10
++          maximum: 24
++        headingColor:
++          type: string
++          pattern: "^#[0-9a-fA-F]{6}$"
++        linkColor:
++          type: string
++          pattern: "^#[0-9a-fA-F]{6}$"
+       required: [backgroundColor, textColor, accentColor, font, contentWidth]
+     BlogPost:
+       type: object
+@@ -216,6 +296,8 @@ components:
+           type: string
+         body:
+           type: string
++        imageUrl:
++          type: string
+         published:
+           type: boolean
+       required: [id, title, slug, date, description, body, published]
+@@ -236,6 +318,8 @@ components:
+           type: string
+         href:
+           type: string
++        imageUrl:
++          type: string
+         published:
+           type: boolean
+       required: [id, title, slug, year, description, body, href, published]
+@@ -252,6 +336,11 @@ components:
+           type: string
+         href:
+           type: string
++        category:
++          type: string
++          maxLength: 60
++        imageUrl:
++          type: string
+         published:
+           type: boolean
+       required: [id, title, author, note, href, published]
+@@ -274,5 +363,61 @@ components:
+           type: array
+           items:
+             $ref: "#/components/schemas/Book"
++        bookCategories:
++          type: array
++          items:
++            type: string
++            minLength: 1
++            maxLength: 60
++          maxItems: 30
+       required: [profile, appearance, posts, caseStudies, books]
++    ContactMessageInput:
++      type: object
++      properties:
++        name:
++          type: string
++          minLength: 1
++          maxLength: 100
++        email:
++          type: string
++          format: email
++          maxLength: 200
++        message:
++          type: string
++          minLength: 10
++          maxLength: 5000
++        website:
++          type: string
++          description: Honeypot field. Must be empty.
++      required: [name, email, message]
++    ContactResult:
++      type: object
++      properties:
++        ok:
++          type: boolean
++      required: [ok]
++    ContactMessage:
++      type: object
++      properties:
++        id:
++          type: integer
++        name:
++          type: string
++        email:
++          type: string
++        message:
++          type: string
++        createdAt:
++          type: string
++        emailed:
++          type: boolean
++        emailError:
++          type: ["string", "null"]
++      required: [id, name, email, message, createdAt, emailed, emailError]
++    DeleteResult:
++      type: object
++      properties:
++        ok:
++          type: boolean
++      required: [ok]
+ 
+diff --git a/lib/api-zod/src/generated/api.ts b/lib/api-zod/src/generated/api.ts
+index f6bdc50..5c18fd9 100644
+--- a/lib/api-zod/src/generated/api.ts
++++ b/lib/api-zod/src/generated/api.ts
+@@ -23,6 +23,24 @@ export const HealthCheckResponse = zod.object({
+ export const getPublicContentResponseAppearanceContentWidthMin = 480;
+ export const getPublicContentResponseAppearanceContentWidthMax = 1000;
+ 
++export const getPublicContentResponseAppearanceHeadingFontMax = 40;
++
++export const getPublicContentResponseAppearanceBodyFontMax = 40;
++
++export const getPublicContentResponseAppearanceHeadingSizeMin = 16;
++export const getPublicContentResponseAppearanceHeadingSizeMax = 64;
++
++export const getPublicContentResponseAppearanceBodySizeMin = 10;
++export const getPublicContentResponseAppearanceBodySizeMax = 24;
++
++export const getPublicContentResponseAppearanceHeadingColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
++export const getPublicContentResponseAppearanceLinkColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
++export const getPublicContentResponseBooksItemCategoryMax = 60;
++
++export const getPublicContentResponseBookCategoriesItemMax = 60;
++
++export const getPublicContentResponseBookCategoriesMax = 30;
++
+ 
+ 
+ export const GetPublicContentResponse = zod.object({
+@@ -45,7 +63,13 @@ export const GetPublicContentResponse = zod.object({
+   "textColor": zod.string(),
+   "accentColor": zod.string(),
+   "font": zod.enum(['system', 'serif', 'mono']),
+-  "contentWidth": zod.number().int().min(getPublicContentResponseAppearanceContentWidthMin).max(getPublicContentResponseAppearanceContentWidthMax)
++  "contentWidth": zod.number().int().min(getPublicContentResponseAppearanceContentWidthMin).max(getPublicContentResponseAppearanceContentWidthMax),
++  "headingFont": zod.string().max(getPublicContentResponseAppearanceHeadingFontMax).optional(),
++  "bodyFont": zod.string().max(getPublicContentResponseAppearanceBodyFontMax).optional(),
++  "headingSize": zod.number().int().min(getPublicContentResponseAppearanceHeadingSizeMin).max(getPublicContentResponseAppearanceHeadingSizeMax).optional(),
++  "bodySize": zod.number().int().min(getPublicContentResponseAppearanceBodySizeMin).max(getPublicContentResponseAppearanceBodySizeMax).optional(),
++  "headingColor": zod.string().regex(getPublicContentResponseAppearanceHeadingColorRegExp).optional(),
++  "linkColor": zod.string().regex(getPublicContentResponseAppearanceLinkColorRegExp).optional()
+ }),
+   "posts": zod.array(zod.object({
+   "id": zod.string(),
+@@ -54,6 +78,7 @@ export const GetPublicContentResponse = zod.object({
+   "date": zod.string(),
+   "description": zod.string(),
+   "body": zod.string(),
++  "imageUrl": zod.string().optional(),
+   "published": zod.boolean()
+ })),
+   "caseStudies": zod.array(zod.object({
+@@ -64,6 +89,7 @@ export const GetPublicContentResponse = zod.object({
+   "description": zod.string(),
+   "body": zod.string(),
+   "href": zod.string(),
++  "imageUrl": zod.string().optional(),
+   "published": zod.boolean()
+ })),
+   "books": zod.array(zod.object({
+@@ -72,8 +98,11 @@ export const GetPublicContentResponse = zod.object({
+   "author": zod.string(),
+   "note": zod.string(),
+   "href": zod.string(),
++  "category": zod.string().max(getPublicContentResponseBooksItemCategoryMax).optional(),
++  "imageUrl": zod.string().optional(),
+   "published": zod.boolean()
+-}))
++})),
++  "bookCategories": zod.array(zod.string().min(1).max(getPublicContentResponseBookCategoriesItemMax)).max(getPublicContentResponseBookCategoriesMax).optional()
+ })
+ 
+ 
+@@ -118,6 +147,24 @@ export const LogoutAdminResponse = zod.object({
+ export const getAdminContentResponseAppearanceContentWidthMin = 480;
+ export const getAdminContentResponseAppearanceContentWidthMax = 1000;
+ 
++export const getAdminContentResponseAppearanceHeadingFontMax = 40;
++
++export const getAdminContentResponseAppearanceBodyFontMax = 40;
++
++export const getAdminContentResponseAppearanceHeadingSizeMin = 16;
++export const getAdminContentResponseAppearanceHeadingSizeMax = 64;
++
++export const getAdminContentResponseAppearanceBodySizeMin = 10;
++export const getAdminContentResponseAppearanceBodySizeMax = 24;
++
++export const getAdminContentResponseAppearanceHeadingColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
++export const getAdminContentResponseAppearanceLinkColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
++export const getAdminContentResponseBooksItemCategoryMax = 60;
++
++export const getAdminContentResponseBookCategoriesItemMax = 60;
++
++export const getAdminContentResponseBookCategoriesMax = 30;
++
+ 
+ 
+ export const GetAdminContentResponse = zod.object({
+@@ -140,7 +187,13 @@ export const GetAdminContentResponse = zod.object({
+   "textColor": zod.string(),
+   "accentColor": zod.string(),
+   "font": zod.enum(['system', 'serif', 'mono']),
+-  "contentWidth": zod.number().int().min(getAdminContentResponseAppearanceContentWidthMin).max(getAdminContentResponseAppearanceContentWidthMax)
++  "contentWidth": zod.number().int().min(getAdminContentResponseAppearanceContentWidthMin).max(getAdminContentResponseAppearanceContentWidthMax),
++  "headingFont": zod.string().max(getAdminContentResponseAppearanceHeadingFontMax).optional(),
++  "bodyFont": zod.string().max(getAdminContentResponseAppearanceBodyFontMax).optional(),
++  "headingSize": zod.number().int().min(getAdminContentResponseAppearanceHeadingSizeMin).max(getAdminContentResponseAppearanceHeadingSizeMax).optional(),
++  "bodySize": zod.number().int().min(getAdminContentResponseAppearanceBodySizeMin).max(getAdminContentResponseAppearanceBodySizeMax).optional(),
++  "headingColor": zod.string().regex(getAdminContentResponseAppearanceHeadingColorRegExp).optional(),
++  "linkColor": zod.string().regex(getAdminContentResponseAppearanceLinkColorRegExp).optional()
+ }),
+   "posts": zod.array(zod.object({
+   "id": zod.string(),
+@@ -149,6 +202,7 @@ export const GetAdminContentResponse = zod.object({
+   "date": zod.string(),
+   "description": zod.string(),
+   "body": zod.string(),
++  "imageUrl": zod.string().optional(),
+   "published": zod.boolean()
+ })),
+   "caseStudies": zod.array(zod.object({
+@@ -159,6 +213,7 @@ export const GetAdminContentResponse = zod.object({
+   "description": zod.string(),
+   "body": zod.string(),
+   "href": zod.string(),
++  "imageUrl": zod.string().optional(),
+   "published": zod.boolean()
+ })),
+   "books": zod.array(zod.object({
+@@ -167,8 +222,11 @@ export const GetAdminContentResponse = zod.object({
+   "author": zod.string(),
+   "note": zod.string(),
+   "href": zod.string(),
++  "category": zod.string().max(getAdminContentResponseBooksItemCategoryMax).optional(),
++  "imageUrl": zod.string().optional(),
+   "published": zod.boolean()
+-}))
++})),
++  "bookCategories": zod.array(zod.string().min(1).max(getAdminContentResponseBookCategoriesItemMax)).max(getAdminContentResponseBookCategoriesMax).optional()
+ })
+ 
+ 
+@@ -178,6 +236,24 @@ export const GetAdminContentResponse = zod.object({
+ export const updateAdminContentBodyAppearanceContentWidthMin = 480;
+ export const updateAdminContentBodyAppearanceContentWidthMax = 1000;
+ 
++export const updateAdminContentBodyAppearanceHeadingFontMax = 40;
++
++export const updateAdminContentBodyAppearanceBodyFontMax = 40;
++
++export const updateAdminContentBodyAppearanceHeadingSizeMin = 16;
++export const updateAdminContentBodyAppearanceHeadingSizeMax = 64;
++
++export const updateAdminContentBodyAppearanceBodySizeMin = 10;
++export const updateAdminContentBodyAppearanceBodySizeMax = 24;
++
++export const updateAdminContentBodyAppearanceHeadingColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
++export const updateAdminContentBodyAppearanceLinkColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
++export const updateAdminContentBodyBooksItemCategoryMax = 60;
++
++export const updateAdminContentBodyBookCategoriesItemMax = 60;
++
++export const updateAdminContentBodyBookCategoriesMax = 30;
++
+ 
+ 
+ export const UpdateAdminContentBody = zod.object({
+@@ -200,7 +276,13 @@ export const UpdateAdminContentBody = zod.object({
+   "textColor": zod.string(),
+   "accentColor": zod.string(),
+   "font": zod.enum(['system', 'serif', 'mono']),
+-  "contentWidth": zod.number().int().min(updateAdminContentBodyAppearanceContentWidthMin).max(updateAdminContentBodyAppearanceContentWidthMax)
++  "contentWidth": zod.number().int().min(updateAdminContentBodyAppearanceContentWidthMin).max(updateAdminContentBodyAppearanceContentWidthMax),
++  "headingFont": zod.string().max(updateAdminContentBodyAppearanceHeadingFontMax).optional(),
++  "bodyFont": zod.string().max(updateAdminContentBodyAppearanceBodyFontMax).optional(),
++  "headingSize": zod.number().int().min(updateAdminContentBodyAppearanceHeadingSizeMin).max(updateAdminContentBodyAppearanceHeadingSizeMax).optional(),
++  "bodySize": zod.number().int().min(updateAdminContentBodyAppearanceBodySizeMin).max(updateAdminContentBodyAppearanceBodySizeMax).optional(),
++  "headingColor": zod.string().regex(updateAdminContentBodyAppearanceHeadingColorRegExp).optional(),
++  "linkColor": zod.string().regex(updateAdminContentBodyAppearanceLinkColorRegExp).optional()
+ }),
+   "posts": zod.array(zod.object({
+   "id": zod.string(),
+@@ -209,6 +291,7 @@ export const UpdateAdminContentBody = zod.object({
+   "date": zod.string(),
+   "description": zod.string(),
+   "body": zod.string(),
++  "imageUrl": zod.string().optional(),
+   "published": zod.boolean()
+ })),
+   "caseStudies": zod.array(zod.object({
+@@ -219,6 +302,7 @@ export const UpdateAdminContentBody = zod.object({
+   "description": zod.string(),
+   "body": zod.string(),
+   "href": zod.string(),
++  "imageUrl": zod.string().optional(),
+   "published": zod.boolean()
+ })),
+   "books": zod.array(zod.object({
+@@ -227,13 +311,34 @@ export const UpdateAdminContentBody = zod.object({
+   "author": zod.string(),
+   "note": zod.string(),
+   "href": zod.string(),
++  "category": zod.string().max(updateAdminContentBodyBooksItemCategoryMax).optional(),
++  "imageUrl": zod.string().optional(),
+   "published": zod.boolean()
+-}))
++})),
++  "bookCategories": zod.array(zod.string().min(1).max(updateAdminContentBodyBookCategoriesItemMax)).max(updateAdminContentBodyBookCategoriesMax).optional()
+ })
+ 
+ export const updateAdminContentResponseAppearanceContentWidthMin = 480;
+ export const updateAdminContentResponseAppearanceContentWidthMax = 1000;
+ 
++export const updateAdminContentResponseAppearanceHeadingFontMax = 40;
++
++export const updateAdminContentResponseAppearanceBodyFontMax = 40;
++
++export const updateAdminContentResponseAppearanceHeadingSizeMin = 16;
++export const updateAdminContentResponseAppearanceHeadingSizeMax = 64;
++
++export const updateAdminContentResponseAppearanceBodySizeMin = 10;
++export const updateAdminContentResponseAppearanceBodySizeMax = 24;
++
++export const updateAdminContentResponseAppearanceHeadingColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
++export const updateAdminContentResponseAppearanceLinkColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
++export const updateAdminContentResponseBooksItemCategoryMax = 60;
++
++export const updateAdminContentResponseBookCategoriesItemMax = 60;
++
++export const updateAdminContentResponseBookCategoriesMax = 30;
++
+ 
+ 
+ export const UpdateAdminContentResponse = zod.object({
+@@ -256,7 +361,13 @@ export const UpdateAdminContentResponse = zod.object({
+   "textColor": zod.string(),
+   "accentColor": zod.string(),
+   "font": zod.enum(['system', 'serif', 'mono']),
+-  "contentWidth": zod.number().int().min(updateAdminContentResponseAppearanceContentWidthMin).max(updateAdminContentResponseAppearanceContentWidthMax)
++  "contentWidth": zod.number().int().min(updateAdminContentResponseAppearanceContentWidthMin).max(updateAdminContentResponseAppearanceContentWidthMax),
++  "headingFont": zod.string().max(updateAdminContentResponseAppearanceHeadingFontMax).optional(),
++  "bodyFont": zod.string().max(updateAdminContentResponseAppearanceBodyFontMax).optional(),
++  "headingSize": zod.number().int().min(updateAdminContentResponseAppearanceHeadingSizeMin).max(updateAdminContentResponseAppearanceHeadingSizeMax).optional(),
++  "bodySize": zod.number().int().min(updateAdminContentResponseAppearanceBodySizeMin).max(updateAdminContentResponseAppearanceBodySizeMax).optional(),
++  "headingColor": zod.string().regex(updateAdminContentResponseAppearanceHeadingColorRegExp).optional(),
++  "linkColor": zod.string().regex(updateAdminContentResponseAppearanceLinkColorRegExp).optional()
+ }),
+   "posts": zod.array(zod.object({
+   "id": zod.string(),
+@@ -265,6 +376,7 @@ export const UpdateAdminContentResponse = zod.object({
+   "date": zod.string(),
+   "description": zod.string(),
+   "body": zod.string(),
++  "imageUrl": zod.string().optional(),
+   "published": zod.boolean()
+ })),
+   "caseStudies": zod.array(zod.object({
+@@ -275,6 +387,7 @@ export const UpdateAdminContentResponse = zod.object({
+   "description": zod.string(),
+   "body": zod.string(),
+   "href": zod.string(),
++  "imageUrl": zod.string().optional(),
+   "published": zod.boolean()
+ })),
+   "books": zod.array(zod.object({
+@@ -283,8 +396,62 @@ export const UpdateAdminContentResponse = zod.object({
+   "author": zod.string(),
+   "note": zod.string(),
+   "href": zod.string(),
++  "category": zod.string().max(updateAdminContentResponseBooksItemCategoryMax).optional(),
++  "imageUrl": zod.string().optional(),
+   "published": zod.boolean()
+-}))
++})),
++  "bookCategories": zod.array(zod.string().min(1).max(updateAdminContentResponseBookCategoriesItemMax)).max(updateAdminContentResponseBookCategoriesMax).optional()
++})
++
++
++/**
++ * @summary Send a message to the site owner
++ */
++export const sendContactMessageBodyNameMax = 100;
++
++export const sendContactMessageBodyEmailMax = 200;
++
++export const sendContactMessageBodyMessageMin = 10;
++export const sendContactMessageBodyMessageMax = 5000;
++
++
++
++export const SendContactMessageBody = zod.object({
++  "name": zod.string().min(1).max(sendContactMessageBodyNameMax),
++  "email": zod.string().email().max(sendContactMessageBodyEmailMax),
++  "message": zod.string().min(sendContactMessageBodyMessageMin).max(sendContactMessageBodyMessageMax),
++  "website": zod.string().optional().describe('Honeypot field. Must be empty.')
++})
++
++export const SendContactMessageResponse = zod.object({
++  "ok": zod.boolean()
++})
++
++
++/**
++ * @summary List received contact messages
++ */
++export const ListContactMessagesResponseItem = zod.object({
++  "id": zod.number().int(),
++  "name": zod.string(),
++  "email": zod.string(),
++  "message": zod.string(),
++  "createdAt": zod.string(),
++  "emailed": zod.boolean(),
++  "emailError": zod.string().nullable()
++})
++export const ListContactMessagesResponse = zod.array(ListContactMessagesResponseItem)
++
++
++/**
++ * @summary Delete a received contact message
++ */
++export const DeleteContactMessageParams = zod.object({
++  "id": zod.coerce.number().int()
++})
++
++export const DeleteContactMessageResponse = zod.object({
++  "ok": zod.boolean()
+ })
+ 
+ 
+diff --git a/lib/api-zod/src/generated/types/appearanceSettings.ts b/lib/api-zod/src/generated/types/appearanceSettings.ts
+index 1666d18..e3caa0e 100644
+--- a/lib/api-zod/src/generated/types/appearanceSettings.ts
++++ b/lib/api-zod/src/generated/types/appearanceSettings.ts
+@@ -17,4 +17,22 @@ export interface AppearanceSettings {
+      * @maximum 1000
+      */
+   contentWidth: number;
++  /** @maxLength 40 */
++  headingFont?: string;
++  /** @maxLength 40 */
++  bodyFont?: string;
++  /**
++     * @minimum 16
++     * @maximum 64
++     */
++  headingSize?: number;
++  /**
++     * @minimum 10
++     * @maximum 24
++     */
++  bodySize?: number;
++  /** @pattern ^#[0-9a-fA-F]{6}$ */
++  headingColor?: string;
++  /** @pattern ^#[0-9a-fA-F]{6}$ */
++  linkColor?: string;
+ }
+diff --git a/lib/api-zod/src/generated/types/blogPost.ts b/lib/api-zod/src/generated/types/blogPost.ts
+index 680e2ea..0b8ff1c 100644
+--- a/lib/api-zod/src/generated/types/blogPost.ts
++++ b/lib/api-zod/src/generated/types/blogPost.ts
+@@ -13,5 +13,6 @@ export interface BlogPost {
+   date: string;
+   description: string;
+   body: string;
++  imageUrl?: string;
+   published: boolean;
+ }
+diff --git a/lib/api-zod/src/generated/types/book.ts b/lib/api-zod/src/generated/types/book.ts
+index 03b830a..6bf615a 100644
+--- a/lib/api-zod/src/generated/types/book.ts
++++ b/lib/api-zod/src/generated/types/book.ts
+@@ -12,5 +12,8 @@ export interface Book {
+   author: string;
+   note: string;
+   href: string;
++  /** @maxLength 60 */
++  category?: string;
++  imageUrl?: string;
+   published: boolean;
+ }
+diff --git a/lib/api-zod/src/generated/types/caseStudy.ts b/lib/api-zod/src/generated/types/caseStudy.ts
+index 97b238a..cded6b9 100644
+--- a/lib/api-zod/src/generated/types/caseStudy.ts
++++ b/lib/api-zod/src/generated/types/caseStudy.ts
+@@ -15,5 +15,6 @@ export interface CaseStudy {
+   description: string;
+   body: string;
+   href: string;
++  imageUrl?: string;
+   published: boolean;
+ }
+diff --git a/lib/api-zod/src/generated/types/contactMessage.ts b/lib/api-zod/src/generated/types/contactMessage.ts
+new file mode 100644
+index 0000000..33ba810
+--- /dev/null
++++ b/lib/api-zod/src/generated/types/contactMessage.ts
+@@ -0,0 +1,18 @@
++/**
++ * Generated by orval 🍺
++ * Do not edit manually.
++ * Api
++ * Personal website content and private editing API
++ * OpenAPI spec version: 0.1.0
++ */
++
++export interface ContactMessage {
++  id: number;
++  name: string;
++  email: string;
++  message: string;
++  createdAt: string;
++  emailed: boolean;
++  /** @nullable */
++  emailError: string | null;
++}
+diff --git a/lib/api-zod/src/generated/types/contactMessageInput.ts b/lib/api-zod/src/generated/types/contactMessageInput.ts
+new file mode 100644
+index 0000000..9cceeec
+--- /dev/null
++++ b/lib/api-zod/src/generated/types/contactMessageInput.ts
+@@ -0,0 +1,24 @@
++/**
++ * Generated by orval 🍺
++ * Do not edit manually.
++ * Api
++ * Personal website content and private editing API
++ * OpenAPI spec version: 0.1.0
++ */
++
++export interface ContactMessageInput {
++  /**
++     * @minLength 1
++     * @maxLength 100
++     */
++  name: string;
++  /** @maxLength 200 */
++  email: string;
++  /**
++     * @minLength 10
++     * @maxLength 5000
++     */
++  message: string;
++  /** Honeypot field. Must be empty. */
++  website?: string;
++}
+diff --git a/lib/api-zod/src/generated/types/contactResult.ts b/lib/api-zod/src/generated/types/contactResult.ts
+new file mode 100644
+index 0000000..fb3274b
+--- /dev/null
++++ b/lib/api-zod/src/generated/types/contactResult.ts
+@@ -0,0 +1,11 @@
++/**
++ * Generated by orval 🍺
++ * Do not edit manually.
++ * Api
++ * Personal website content and private editing API
++ * OpenAPI spec version: 0.1.0
++ */
++
++export interface ContactResult {
++  ok: boolean;
++}
+diff --git a/lib/api-zod/src/generated/types/deleteResult.ts b/lib/api-zod/src/generated/types/deleteResult.ts
+new file mode 100644
+index 0000000..a01cc92
+--- /dev/null
++++ b/lib/api-zod/src/generated/types/deleteResult.ts
+@@ -0,0 +1,11 @@
++/**
++ * Generated by orval 🍺
++ * Do not edit manually.
++ * Api
++ * Personal website content and private editing API
++ * OpenAPI spec version: 0.1.0
++ */
++
++export interface DeleteResult {
++  ok: boolean;
++}
+diff --git a/lib/api-zod/src/generated/types/index.ts b/lib/api-zod/src/generated/types/index.ts
+index 8d494fc..b6e9725 100644
+--- a/lib/api-zod/src/generated/types/index.ts
++++ b/lib/api-zod/src/generated/types/index.ts
+@@ -12,6 +12,10 @@ export * from './appearanceSettingsFont';
+ export * from './blogPost';
+ export * from './book';
+ export * from './caseStudy';
++export * from './contactMessage';
++export * from './contactMessageInput';
++export * from './contactResult';
++export * from './deleteResult';
+ export * from './healthStatus';
+ export * from './journeyItem';
+ export * from './profileContent';
+diff --git a/lib/api-zod/src/generated/types/siteContent.ts b/lib/api-zod/src/generated/types/siteContent.ts
+index 5bdb150..51e6860 100644
+--- a/lib/api-zod/src/generated/types/siteContent.ts
++++ b/lib/api-zod/src/generated/types/siteContent.ts
+@@ -17,4 +17,10 @@ export interface SiteContent {
+   posts: BlogPost[];
+   caseStudies: CaseStudy[];
+   books: Book[];
++  /**
++     * @maxItems 30
++     * @items.minLength 1
++     * @items.maxLength 60
++     */
++  bookCategories?: string[];
+ }
+diff --git a/lib/db/migrations/0001_images_and_contact.sql b/lib/db/migrations/0001_images_and_contact.sql
+new file mode 100644
+index 0000000..aeca500
+--- /dev/null
++++ b/lib/db/migrations/0001_images_and_contact.sql
+@@ -0,0 +1,24 @@
++-- Additive, idempotent migration. Does not touch the existing site_content table.
++-- Equivalent to running: pnpm --filter @workspace/db run push
++
++CREATE TABLE IF NOT EXISTS uploaded_images (
++  id           text PRIMARY KEY,
++  content_type text NOT NULL,
++  data         bytea NOT NULL,
++  size         integer NOT NULL,
++  created_at   timestamptz NOT NULL DEFAULT now()
++);
++
++CREATE TABLE IF NOT EXISTS contact_messages (
++  id          serial PRIMARY KEY,
++  name        text NOT NULL,
++  email       text NOT NULL,
++  message     text NOT NULL,
++  ip_hash     text NOT NULL DEFAULT '',
++  emailed     boolean NOT NULL DEFAULT false,
++  email_error text,
++  created_at  timestamptz NOT NULL DEFAULT now()
++);
++
++CREATE INDEX IF NOT EXISTS contact_messages_ip_created_idx
++  ON contact_messages (ip_hash, created_at);
+diff --git a/lib/db/src/schema/contact-messages.ts b/lib/db/src/schema/contact-messages.ts
+new file mode 100644
+index 0000000..57d7c42
+--- /dev/null
++++ b/lib/db/src/schema/contact-messages.ts
+@@ -0,0 +1,28 @@
++import {
++  boolean,
++  index,
++  pgTable,
++  serial,
++  text,
++  timestamp,
++} from "drizzle-orm/pg-core";
++
++export const contactMessagesTable = pgTable(
++  "contact_messages",
++  {
++    id: serial("id").primaryKey(),
++    name: text("name").notNull(),
++    email: text("email").notNull(),
++    message: text("message").notNull(),
++    /** SHA-256 of the sender IP + secret, used only for rate limiting. */
++    ipHash: text("ip_hash").notNull().default(""),
++    emailed: boolean("emailed").notNull().default(false),
++    emailError: text("email_error"),
++    createdAt: timestamp("created_at", { withTimezone: true })
++      .notNull()
++      .defaultNow(),
++  },
++  (table) => [index("contact_messages_ip_created_idx").on(table.ipHash, table.createdAt)],
++);
++
++export type ContactMessageRecord = typeof contactMessagesTable.$inferSelect;
+diff --git a/lib/db/src/schema/index.ts b/lib/db/src/schema/index.ts
+index 8850a42..ae97620 100644
+--- a/lib/db/src/schema/index.ts
++++ b/lib/db/src/schema/index.ts
+@@ -1 +1,3 @@
+-export * from "./site-content";
+\ No newline at end of file
++export * from "./site-content";
++export * from "./uploaded-images";
++export * from "./contact-messages";
+diff --git a/lib/db/src/schema/uploaded-images.ts b/lib/db/src/schema/uploaded-images.ts
+new file mode 100644
+index 0000000..c99bb39
+--- /dev/null
++++ b/lib/db/src/schema/uploaded-images.ts
+@@ -0,0 +1,24 @@
++import { customType, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
++
++const bytea = customType<{ data: Buffer; driverData: Buffer }>({
++  dataType() {
++    return "bytea";
++  },
++});
++
++/**
++ * Uploaded images are stored in PostgreSQL so they persist across refreshes,
++ * restarts and redeployments on any host (Replit, Vercel, ...) without needing
++ * a separate object-storage account.
++ */
++export const uploadedImagesTable = pgTable("uploaded_images", {
++  id: text("id").primaryKey(),
++  contentType: text("content_type").notNull(),
++  data: bytea("data").notNull(),
++  size: integer("size").notNull(),
++  createdAt: timestamp("created_at", { withTimezone: true })
++    .notNull()
++    .defaultNow(),
++});
++
++export type UploadedImageRecord = typeof uploadedImagesTable.$inferSelect;

@@ -1,0 +1,3 @@
+export function ColorField({ label, value, onChange, testId, onReset }: { label: string; value: string; onChange: (value: string) => void; testId: string; onReset?: () => void }) {
+  return <div className="admin-field"><label htmlFor={testId}>{label}</label><div className="admin-color-input"><input id={testId} type="color" value={/^#[0-9a-f]{6}$/i.test(value) ? value : '#587b79'} onChange={(event) => onChange(event.target.value)} data-testid={testId} /><input aria-label={`${label} hex value`} value={value} onChange={(event) => onChange(event.target.value)} data-testid={`${testId}-text`} />{onReset && <button type="button" className="admin-button" onClick={onReset} data-testid={`${testId}-reset`}>Default</button>}</div></div>;
+}

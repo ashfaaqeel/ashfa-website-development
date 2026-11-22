@@ -49,6 +49,23 @@ export const AppearanceSettingsFont = {
   mono: 'mono',
 } as const;
 
+export type AppearanceSettingsTextAlign = typeof AppearanceSettingsTextAlign[keyof typeof AppearanceSettingsTextAlign];
+
+
+export const AppearanceSettingsTextAlign = {
+  left: 'left',
+  center: 'center',
+  right: 'right',
+} as const;
+
+export type AppearanceSettingsLinkStyle = typeof AppearanceSettingsLinkStyle[keyof typeof AppearanceSettingsLinkStyle];
+
+
+export const AppearanceSettingsLinkStyle = {
+  underline: 'underline',
+  plain: 'plain',
+} as const;
+
 export interface AppearanceSettings {
   backgroundColor: string;
   textColor: string;
@@ -59,6 +76,197 @@ export interface AppearanceSettings {
      * @maximum 1000
      */
   contentWidth: number;
+  /** @maxLength 40 */
+  headingFont?: string;
+  /** @maxLength 40 */
+  bodyFont?: string;
+  /**
+     * @minimum 16
+     * @maximum 64
+     */
+  headingSize?: number;
+  /**
+     * @minimum 10
+     * @maximum 24
+     */
+  bodySize?: number;
+  /** @pattern ^#[0-9a-fA-F]{6}$ */
+  headingColor?: string;
+  /** @pattern ^#[0-9a-fA-F]{6}$ */
+  linkColor?: string;
+  /** @maxLength 40 */
+  sectionHeadingFont?: string;
+  /** @maxLength 40 */
+  subheadingFont?: string;
+  /** @maxLength 40 */
+  navFont?: string;
+  /** @maxLength 40 */
+  captionFont?: string;
+  /** @maxLength 40 */
+  metaFont?: string;
+  /**
+     * @minimum 9
+     * @maximum 48
+     */
+  sectionHeadingSize?: number;
+  /**
+     * @minimum 9
+     * @maximum 48
+     */
+  subheadingSize?: number;
+  /**
+     * @minimum 9
+     * @maximum 32
+     */
+  navSize?: number;
+  /**
+     * @minimum 9
+     * @maximum 28
+     */
+  captionSize?: number;
+  /**
+     * @minimum 9
+     * @maximum 28
+     */
+  metaSize?: number;
+  /** @pattern ^#[0-9a-fA-F]{6}$ */
+  sectionHeadingColor?: string;
+  /** @pattern ^#[0-9a-fA-F]{6}$ */
+  subheadingColor?: string;
+  /** @pattern ^#[0-9a-fA-F]{6}$ */
+  navColor?: string;
+  /** @pattern ^#[0-9a-fA-F]{6}$ */
+  captionColor?: string;
+  /** @pattern ^#[0-9a-fA-F]{6}$ */
+  metaColor?: string;
+  /** @pattern ^#[0-9a-fA-F]{6}$ */
+  linkHoverColor?: string;
+  /** @pattern ^#[0-9a-fA-F]{6}$ */
+  borderColor?: string;
+  /** @pattern ^#[0-9a-fA-F]{6}$ */
+  footerColor?: string;
+  textAlign?: AppearanceSettingsTextAlign;
+  /**
+     * @minimum 12
+     * @maximum 120
+     */
+  pageMargin?: number;
+  /**
+     * @minimum 8
+     * @maximum 160
+     */
+  sectionSpacing?: number;
+  /**
+     * @minimum 0
+     * @maximum 48
+     */
+  elementSpacing?: number;
+  /**
+     * @minimum 40
+     * @maximum 1000
+     */
+  imageMaxWidth?: number;
+  /**
+     * @minimum 0
+     * @maximum 24
+     */
+  cornerRadius?: number;
+  linkStyle?: AppearanceSettingsLinkStyle;
+}
+
+export type ContentBlockType = typeof ContentBlockType[keyof typeof ContentBlockType];
+
+
+export const ContentBlockType = {
+  paragraph: 'paragraph',
+  heading: 'heading',
+  quote: 'quote',
+  divider: 'divider',
+  list: 'list',
+  image: 'image',
+} as const;
+
+export interface ContentBlock {
+  id: string;
+  type: ContentBlockType;
+  text?: string;
+  /**
+     * @minimum 2
+     * @maximum 4
+     */
+  level?: number;
+  ordered?: boolean;
+  items?: string[];
+  imageUrl?: string;
+  alt?: string;
+  caption?: string;
+}
+
+export interface SectionEntry {
+  id: string;
+  label?: string;
+  text: string;
+  href?: string;
+  imageUrl?: string;
+  hidden?: boolean;
+}
+
+export type PageSectionLayout = typeof PageSectionLayout[keyof typeof PageSectionLayout];
+
+
+export const PageSectionLayout = {
+  prose: 'prose',
+  split: 'split',
+  compact: 'compact',
+  links: 'links',
+} as const;
+
+export interface PageSection {
+  id: string;
+  heading?: string;
+  subtitle?: string;
+  description?: string;
+  body?: string;
+  layout: PageSectionLayout;
+  hidden: boolean;
+  entries?: SectionEntry[];
+}
+
+export interface NavItem {
+  id: string;
+  label: string;
+  href: string;
+  hidden: boolean;
+}
+
+export type ContactSettingsMode = typeof ContactSettingsMode[keyof typeof ContactSettingsMode];
+
+
+export const ContactSettingsMode = {
+  modal: 'modal',
+  mailto: 'mailto',
+  url: 'url',
+} as const;
+
+export interface ContactSettings {
+  mode: ContactSettingsMode;
+  email?: string;
+  url?: string;
+}
+
+export interface BookGroup {
+  id: string;
+  name: string;
+  hidden: boolean;
+}
+
+export interface PageCopy {
+  blogTitle?: string;
+  blogIntro?: string;
+  booksTitle?: string;
+  booksIntro?: string;
+  studiesTitle?: string;
+  studiesIntro?: string;
 }
 
 export interface BlogPost {
@@ -68,7 +276,18 @@ export interface BlogPost {
   date: string;
   description: string;
   body: string;
+  imageUrl?: string;
   published: boolean;
+  subtitle?: string;
+  author?: string;
+  categories?: string[];
+  tags?: string[];
+  showCoverOnPage?: boolean;
+  cardShowTitle?: boolean;
+  cardShowImage?: boolean;
+  cardShowDescription?: boolean;
+  cardShowDate?: boolean;
+  blocks?: ContentBlock[];
 }
 
 export interface CaseStudy {
@@ -80,7 +299,18 @@ export interface CaseStudy {
   description: string;
   body: string;
   href: string;
+  imageUrl?: string;
   published: boolean;
+  subtitle?: string;
+  author?: string;
+  categories?: string[];
+  tags?: string[];
+  showCoverOnPage?: boolean;
+  cardShowTitle?: boolean;
+  cardShowImage?: boolean;
+  cardShowDescription?: boolean;
+  cardShowDate?: boolean;
+  blocks?: ContentBlock[];
 }
 
 export interface Book {
@@ -89,7 +319,15 @@ export interface Book {
   author: string;
   note: string;
   href: string;
+  /** @maxLength 60 */
+  category?: string;
+  imageUrl?: string;
   published: boolean;
+  /** @maxLength 40 */
+  kind?: string;
+  showAuthor?: boolean;
+  showNote?: boolean;
+  showImage?: boolean;
 }
 
 export interface SiteContent {
@@ -98,5 +336,52 @@ export interface SiteContent {
   posts: BlogPost[];
   caseStudies: CaseStudy[];
   books: Book[];
+  /**
+     * @maxItems 30
+     * @items.minLength 1
+     * @items.maxLength 60
+     */
+  bookCategories?: string[];
+  sections?: PageSection[];
+  navigation?: NavItem[];
+  contactSettings?: ContactSettings;
+  bookGroups?: BookGroup[];
+  pageCopy?: PageCopy;
+}
+
+export interface ContactMessageInput {
+  /**
+     * @minLength 1
+     * @maxLength 100
+     */
+  name: string;
+  /** @maxLength 200 */
+  email: string;
+  /**
+     * @minLength 10
+     * @maxLength 5000
+     */
+  message: string;
+  /** Honeypot field. Must be empty. */
+  website?: string;
+}
+
+export interface ContactResult {
+  ok: boolean;
+}
+
+export interface ContactMessage {
+  id: number;
+  name: string;
+  email: string;
+  message: string;
+  createdAt: string;
+  emailed: boolean;
+  /** @nullable */
+  emailError: string | null;
+}
+
+export interface DeleteResult {
+  ok: boolean;
 }
 

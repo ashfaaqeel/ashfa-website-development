@@ -23,6 +23,80 @@ export const HealthCheckResponse = zod.object({
 export const getPublicContentResponseAppearanceContentWidthMin = 480;
 export const getPublicContentResponseAppearanceContentWidthMax = 1000;
 
+export const getPublicContentResponseAppearanceHeadingFontMax = 40;
+
+export const getPublicContentResponseAppearanceBodyFontMax = 40;
+
+export const getPublicContentResponseAppearanceHeadingSizeMin = 16;
+export const getPublicContentResponseAppearanceHeadingSizeMax = 64;
+
+export const getPublicContentResponseAppearanceBodySizeMin = 10;
+export const getPublicContentResponseAppearanceBodySizeMax = 24;
+
+export const getPublicContentResponseAppearanceHeadingColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const getPublicContentResponseAppearanceLinkColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const getPublicContentResponseAppearanceSectionHeadingFontMax = 40;
+
+export const getPublicContentResponseAppearanceSubheadingFontMax = 40;
+
+export const getPublicContentResponseAppearanceNavFontMax = 40;
+
+export const getPublicContentResponseAppearanceCaptionFontMax = 40;
+
+export const getPublicContentResponseAppearanceMetaFontMax = 40;
+
+export const getPublicContentResponseAppearanceSectionHeadingSizeMin = 9;
+export const getPublicContentResponseAppearanceSectionHeadingSizeMax = 48;
+
+export const getPublicContentResponseAppearanceSubheadingSizeMin = 9;
+export const getPublicContentResponseAppearanceSubheadingSizeMax = 48;
+
+export const getPublicContentResponseAppearanceNavSizeMin = 9;
+export const getPublicContentResponseAppearanceNavSizeMax = 32;
+
+export const getPublicContentResponseAppearanceCaptionSizeMin = 9;
+export const getPublicContentResponseAppearanceCaptionSizeMax = 28;
+
+export const getPublicContentResponseAppearanceMetaSizeMin = 9;
+export const getPublicContentResponseAppearanceMetaSizeMax = 28;
+
+export const getPublicContentResponseAppearanceSectionHeadingColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const getPublicContentResponseAppearanceSubheadingColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const getPublicContentResponseAppearanceNavColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const getPublicContentResponseAppearanceCaptionColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const getPublicContentResponseAppearanceMetaColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const getPublicContentResponseAppearanceLinkHoverColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const getPublicContentResponseAppearanceBorderColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const getPublicContentResponseAppearanceFooterColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const getPublicContentResponseAppearancePageMarginMin = 12;
+export const getPublicContentResponseAppearancePageMarginMax = 120;
+
+export const getPublicContentResponseAppearanceSectionSpacingMin = 8;
+export const getPublicContentResponseAppearanceSectionSpacingMax = 160;
+
+export const getPublicContentResponseAppearanceElementSpacingMin = 0;
+export const getPublicContentResponseAppearanceElementSpacingMax = 48;
+
+export const getPublicContentResponseAppearanceImageMaxWidthMin = 40;
+export const getPublicContentResponseAppearanceImageMaxWidthMax = 1000;
+
+export const getPublicContentResponseAppearanceCornerRadiusMin = 0;
+export const getPublicContentResponseAppearanceCornerRadiusMax = 24;
+
+export const getPublicContentResponsePostsItemBlocksItemLevelMin = 2;
+export const getPublicContentResponsePostsItemBlocksItemLevelMax = 4;
+
+export const getPublicContentResponseCaseStudiesItemBlocksItemLevelMin = 2;
+export const getPublicContentResponseCaseStudiesItemBlocksItemLevelMax = 4;
+
+export const getPublicContentResponseBooksItemCategoryMax = 60;
+
+export const getPublicContentResponseBooksItemKindMax = 40;
+
+export const getPublicContentResponseBookCategoriesItemMax = 60;
+
+export const getPublicContentResponseBookCategoriesMax = 30;
+
 
 
 export const GetPublicContentResponse = zod.object({
@@ -45,7 +119,38 @@ export const GetPublicContentResponse = zod.object({
   "textColor": zod.string(),
   "accentColor": zod.string(),
   "font": zod.enum(['system', 'serif', 'mono']),
-  "contentWidth": zod.number().int().min(getPublicContentResponseAppearanceContentWidthMin).max(getPublicContentResponseAppearanceContentWidthMax)
+  "contentWidth": zod.number().int().min(getPublicContentResponseAppearanceContentWidthMin).max(getPublicContentResponseAppearanceContentWidthMax),
+  "headingFont": zod.string().max(getPublicContentResponseAppearanceHeadingFontMax).optional(),
+  "bodyFont": zod.string().max(getPublicContentResponseAppearanceBodyFontMax).optional(),
+  "headingSize": zod.number().int().min(getPublicContentResponseAppearanceHeadingSizeMin).max(getPublicContentResponseAppearanceHeadingSizeMax).optional(),
+  "bodySize": zod.number().int().min(getPublicContentResponseAppearanceBodySizeMin).max(getPublicContentResponseAppearanceBodySizeMax).optional(),
+  "headingColor": zod.string().regex(getPublicContentResponseAppearanceHeadingColorRegExp).optional(),
+  "linkColor": zod.string().regex(getPublicContentResponseAppearanceLinkColorRegExp).optional(),
+  "sectionHeadingFont": zod.string().max(getPublicContentResponseAppearanceSectionHeadingFontMax).optional(),
+  "subheadingFont": zod.string().max(getPublicContentResponseAppearanceSubheadingFontMax).optional(),
+  "navFont": zod.string().max(getPublicContentResponseAppearanceNavFontMax).optional(),
+  "captionFont": zod.string().max(getPublicContentResponseAppearanceCaptionFontMax).optional(),
+  "metaFont": zod.string().max(getPublicContentResponseAppearanceMetaFontMax).optional(),
+  "sectionHeadingSize": zod.number().int().min(getPublicContentResponseAppearanceSectionHeadingSizeMin).max(getPublicContentResponseAppearanceSectionHeadingSizeMax).optional(),
+  "subheadingSize": zod.number().int().min(getPublicContentResponseAppearanceSubheadingSizeMin).max(getPublicContentResponseAppearanceSubheadingSizeMax).optional(),
+  "navSize": zod.number().int().min(getPublicContentResponseAppearanceNavSizeMin).max(getPublicContentResponseAppearanceNavSizeMax).optional(),
+  "captionSize": zod.number().int().min(getPublicContentResponseAppearanceCaptionSizeMin).max(getPublicContentResponseAppearanceCaptionSizeMax).optional(),
+  "metaSize": zod.number().int().min(getPublicContentResponseAppearanceMetaSizeMin).max(getPublicContentResponseAppearanceMetaSizeMax).optional(),
+  "sectionHeadingColor": zod.string().regex(getPublicContentResponseAppearanceSectionHeadingColorRegExp).optional(),
+  "subheadingColor": zod.string().regex(getPublicContentResponseAppearanceSubheadingColorRegExp).optional(),
+  "navColor": zod.string().regex(getPublicContentResponseAppearanceNavColorRegExp).optional(),
+  "captionColor": zod.string().regex(getPublicContentResponseAppearanceCaptionColorRegExp).optional(),
+  "metaColor": zod.string().regex(getPublicContentResponseAppearanceMetaColorRegExp).optional(),
+  "linkHoverColor": zod.string().regex(getPublicContentResponseAppearanceLinkHoverColorRegExp).optional(),
+  "borderColor": zod.string().regex(getPublicContentResponseAppearanceBorderColorRegExp).optional(),
+  "footerColor": zod.string().regex(getPublicContentResponseAppearanceFooterColorRegExp).optional(),
+  "textAlign": zod.enum(['left', 'center', 'right']).optional(),
+  "pageMargin": zod.number().int().min(getPublicContentResponseAppearancePageMarginMin).max(getPublicContentResponseAppearancePageMarginMax).optional(),
+  "sectionSpacing": zod.number().int().min(getPublicContentResponseAppearanceSectionSpacingMin).max(getPublicContentResponseAppearanceSectionSpacingMax).optional(),
+  "elementSpacing": zod.number().int().min(getPublicContentResponseAppearanceElementSpacingMin).max(getPublicContentResponseAppearanceElementSpacingMax).optional(),
+  "imageMaxWidth": zod.number().int().min(getPublicContentResponseAppearanceImageMaxWidthMin).max(getPublicContentResponseAppearanceImageMaxWidthMax).optional(),
+  "cornerRadius": zod.number().int().min(getPublicContentResponseAppearanceCornerRadiusMin).max(getPublicContentResponseAppearanceCornerRadiusMax).optional(),
+  "linkStyle": zod.enum(['underline', 'plain']).optional()
 }),
   "posts": zod.array(zod.object({
   "id": zod.string(),
@@ -54,7 +159,28 @@ export const GetPublicContentResponse = zod.object({
   "date": zod.string(),
   "description": zod.string(),
   "body": zod.string(),
-  "published": zod.boolean()
+  "imageUrl": zod.string().optional(),
+  "published": zod.boolean(),
+  "subtitle": zod.string().optional(),
+  "author": zod.string().optional(),
+  "categories": zod.array(zod.string()).optional(),
+  "tags": zod.array(zod.string()).optional(),
+  "showCoverOnPage": zod.boolean().optional(),
+  "cardShowTitle": zod.boolean().optional(),
+  "cardShowImage": zod.boolean().optional(),
+  "cardShowDescription": zod.boolean().optional(),
+  "cardShowDate": zod.boolean().optional(),
+  "blocks": zod.array(zod.object({
+  "id": zod.string(),
+  "type": zod.enum(['paragraph', 'heading', 'quote', 'divider', 'list', 'image']),
+  "text": zod.string().optional(),
+  "level": zod.number().int().min(getPublicContentResponsePostsItemBlocksItemLevelMin).max(getPublicContentResponsePostsItemBlocksItemLevelMax).optional(),
+  "ordered": zod.boolean().optional(),
+  "items": zod.array(zod.string()).optional(),
+  "imageUrl": zod.string().optional(),
+  "alt": zod.string().optional(),
+  "caption": zod.string().optional()
+})).optional()
 })),
   "caseStudies": zod.array(zod.object({
   "id": zod.string(),
@@ -64,7 +190,28 @@ export const GetPublicContentResponse = zod.object({
   "description": zod.string(),
   "body": zod.string(),
   "href": zod.string(),
-  "published": zod.boolean()
+  "imageUrl": zod.string().optional(),
+  "published": zod.boolean(),
+  "subtitle": zod.string().optional(),
+  "author": zod.string().optional(),
+  "categories": zod.array(zod.string()).optional(),
+  "tags": zod.array(zod.string()).optional(),
+  "showCoverOnPage": zod.boolean().optional(),
+  "cardShowTitle": zod.boolean().optional(),
+  "cardShowImage": zod.boolean().optional(),
+  "cardShowDescription": zod.boolean().optional(),
+  "cardShowDate": zod.boolean().optional(),
+  "blocks": zod.array(zod.object({
+  "id": zod.string(),
+  "type": zod.enum(['paragraph', 'heading', 'quote', 'divider', 'list', 'image']),
+  "text": zod.string().optional(),
+  "level": zod.number().int().min(getPublicContentResponseCaseStudiesItemBlocksItemLevelMin).max(getPublicContentResponseCaseStudiesItemBlocksItemLevelMax).optional(),
+  "ordered": zod.boolean().optional(),
+  "items": zod.array(zod.string()).optional(),
+  "imageUrl": zod.string().optional(),
+  "alt": zod.string().optional(),
+  "caption": zod.string().optional()
+})).optional()
 })),
   "books": zod.array(zod.object({
   "id": zod.string(),
@@ -72,8 +219,56 @@ export const GetPublicContentResponse = zod.object({
   "author": zod.string(),
   "note": zod.string(),
   "href": zod.string(),
-  "published": zod.boolean()
-}))
+  "category": zod.string().max(getPublicContentResponseBooksItemCategoryMax).optional(),
+  "imageUrl": zod.string().optional(),
+  "published": zod.boolean(),
+  "kind": zod.string().max(getPublicContentResponseBooksItemKindMax).optional(),
+  "showAuthor": zod.boolean().optional(),
+  "showNote": zod.boolean().optional(),
+  "showImage": zod.boolean().optional()
+})),
+  "bookCategories": zod.array(zod.string().min(1).max(getPublicContentResponseBookCategoriesItemMax)).max(getPublicContentResponseBookCategoriesMax).optional(),
+  "sections": zod.array(zod.object({
+  "id": zod.string(),
+  "heading": zod.string().optional(),
+  "subtitle": zod.string().optional(),
+  "description": zod.string().optional(),
+  "body": zod.string().optional(),
+  "layout": zod.enum(['prose', 'split', 'compact', 'links']),
+  "hidden": zod.boolean(),
+  "entries": zod.array(zod.object({
+  "id": zod.string(),
+  "label": zod.string().optional(),
+  "text": zod.string(),
+  "href": zod.string().optional(),
+  "imageUrl": zod.string().optional(),
+  "hidden": zod.boolean().optional()
+})).optional()
+})).optional(),
+  "navigation": zod.array(zod.object({
+  "id": zod.string(),
+  "label": zod.string(),
+  "href": zod.string(),
+  "hidden": zod.boolean()
+})).optional(),
+  "contactSettings": zod.object({
+  "mode": zod.enum(['modal', 'mailto', 'url']),
+  "email": zod.string().optional(),
+  "url": zod.string().optional()
+}).optional(),
+  "bookGroups": zod.array(zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "hidden": zod.boolean()
+})).optional(),
+  "pageCopy": zod.object({
+  "blogTitle": zod.string().optional(),
+  "blogIntro": zod.string().optional(),
+  "booksTitle": zod.string().optional(),
+  "booksIntro": zod.string().optional(),
+  "studiesTitle": zod.string().optional(),
+  "studiesIntro": zod.string().optional()
+}).optional()
 })
 
 
@@ -118,6 +313,80 @@ export const LogoutAdminResponse = zod.object({
 export const getAdminContentResponseAppearanceContentWidthMin = 480;
 export const getAdminContentResponseAppearanceContentWidthMax = 1000;
 
+export const getAdminContentResponseAppearanceHeadingFontMax = 40;
+
+export const getAdminContentResponseAppearanceBodyFontMax = 40;
+
+export const getAdminContentResponseAppearanceHeadingSizeMin = 16;
+export const getAdminContentResponseAppearanceHeadingSizeMax = 64;
+
+export const getAdminContentResponseAppearanceBodySizeMin = 10;
+export const getAdminContentResponseAppearanceBodySizeMax = 24;
+
+export const getAdminContentResponseAppearanceHeadingColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const getAdminContentResponseAppearanceLinkColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const getAdminContentResponseAppearanceSectionHeadingFontMax = 40;
+
+export const getAdminContentResponseAppearanceSubheadingFontMax = 40;
+
+export const getAdminContentResponseAppearanceNavFontMax = 40;
+
+export const getAdminContentResponseAppearanceCaptionFontMax = 40;
+
+export const getAdminContentResponseAppearanceMetaFontMax = 40;
+
+export const getAdminContentResponseAppearanceSectionHeadingSizeMin = 9;
+export const getAdminContentResponseAppearanceSectionHeadingSizeMax = 48;
+
+export const getAdminContentResponseAppearanceSubheadingSizeMin = 9;
+export const getAdminContentResponseAppearanceSubheadingSizeMax = 48;
+
+export const getAdminContentResponseAppearanceNavSizeMin = 9;
+export const getAdminContentResponseAppearanceNavSizeMax = 32;
+
+export const getAdminContentResponseAppearanceCaptionSizeMin = 9;
+export const getAdminContentResponseAppearanceCaptionSizeMax = 28;
+
+export const getAdminContentResponseAppearanceMetaSizeMin = 9;
+export const getAdminContentResponseAppearanceMetaSizeMax = 28;
+
+export const getAdminContentResponseAppearanceSectionHeadingColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const getAdminContentResponseAppearanceSubheadingColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const getAdminContentResponseAppearanceNavColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const getAdminContentResponseAppearanceCaptionColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const getAdminContentResponseAppearanceMetaColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const getAdminContentResponseAppearanceLinkHoverColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const getAdminContentResponseAppearanceBorderColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const getAdminContentResponseAppearanceFooterColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const getAdminContentResponseAppearancePageMarginMin = 12;
+export const getAdminContentResponseAppearancePageMarginMax = 120;
+
+export const getAdminContentResponseAppearanceSectionSpacingMin = 8;
+export const getAdminContentResponseAppearanceSectionSpacingMax = 160;
+
+export const getAdminContentResponseAppearanceElementSpacingMin = 0;
+export const getAdminContentResponseAppearanceElementSpacingMax = 48;
+
+export const getAdminContentResponseAppearanceImageMaxWidthMin = 40;
+export const getAdminContentResponseAppearanceImageMaxWidthMax = 1000;
+
+export const getAdminContentResponseAppearanceCornerRadiusMin = 0;
+export const getAdminContentResponseAppearanceCornerRadiusMax = 24;
+
+export const getAdminContentResponsePostsItemBlocksItemLevelMin = 2;
+export const getAdminContentResponsePostsItemBlocksItemLevelMax = 4;
+
+export const getAdminContentResponseCaseStudiesItemBlocksItemLevelMin = 2;
+export const getAdminContentResponseCaseStudiesItemBlocksItemLevelMax = 4;
+
+export const getAdminContentResponseBooksItemCategoryMax = 60;
+
+export const getAdminContentResponseBooksItemKindMax = 40;
+
+export const getAdminContentResponseBookCategoriesItemMax = 60;
+
+export const getAdminContentResponseBookCategoriesMax = 30;
+
 
 
 export const GetAdminContentResponse = zod.object({
@@ -140,7 +409,38 @@ export const GetAdminContentResponse = zod.object({
   "textColor": zod.string(),
   "accentColor": zod.string(),
   "font": zod.enum(['system', 'serif', 'mono']),
-  "contentWidth": zod.number().int().min(getAdminContentResponseAppearanceContentWidthMin).max(getAdminContentResponseAppearanceContentWidthMax)
+  "contentWidth": zod.number().int().min(getAdminContentResponseAppearanceContentWidthMin).max(getAdminContentResponseAppearanceContentWidthMax),
+  "headingFont": zod.string().max(getAdminContentResponseAppearanceHeadingFontMax).optional(),
+  "bodyFont": zod.string().max(getAdminContentResponseAppearanceBodyFontMax).optional(),
+  "headingSize": zod.number().int().min(getAdminContentResponseAppearanceHeadingSizeMin).max(getAdminContentResponseAppearanceHeadingSizeMax).optional(),
+  "bodySize": zod.number().int().min(getAdminContentResponseAppearanceBodySizeMin).max(getAdminContentResponseAppearanceBodySizeMax).optional(),
+  "headingColor": zod.string().regex(getAdminContentResponseAppearanceHeadingColorRegExp).optional(),
+  "linkColor": zod.string().regex(getAdminContentResponseAppearanceLinkColorRegExp).optional(),
+  "sectionHeadingFont": zod.string().max(getAdminContentResponseAppearanceSectionHeadingFontMax).optional(),
+  "subheadingFont": zod.string().max(getAdminContentResponseAppearanceSubheadingFontMax).optional(),
+  "navFont": zod.string().max(getAdminContentResponseAppearanceNavFontMax).optional(),
+  "captionFont": zod.string().max(getAdminContentResponseAppearanceCaptionFontMax).optional(),
+  "metaFont": zod.string().max(getAdminContentResponseAppearanceMetaFontMax).optional(),
+  "sectionHeadingSize": zod.number().int().min(getAdminContentResponseAppearanceSectionHeadingSizeMin).max(getAdminContentResponseAppearanceSectionHeadingSizeMax).optional(),
+  "subheadingSize": zod.number().int().min(getAdminContentResponseAppearanceSubheadingSizeMin).max(getAdminContentResponseAppearanceSubheadingSizeMax).optional(),
+  "navSize": zod.number().int().min(getAdminContentResponseAppearanceNavSizeMin).max(getAdminContentResponseAppearanceNavSizeMax).optional(),
+  "captionSize": zod.number().int().min(getAdminContentResponseAppearanceCaptionSizeMin).max(getAdminContentResponseAppearanceCaptionSizeMax).optional(),
+  "metaSize": zod.number().int().min(getAdminContentResponseAppearanceMetaSizeMin).max(getAdminContentResponseAppearanceMetaSizeMax).optional(),
+  "sectionHeadingColor": zod.string().regex(getAdminContentResponseAppearanceSectionHeadingColorRegExp).optional(),
+  "subheadingColor": zod.string().regex(getAdminContentResponseAppearanceSubheadingColorRegExp).optional(),
+  "navColor": zod.string().regex(getAdminContentResponseAppearanceNavColorRegExp).optional(),
+  "captionColor": zod.string().regex(getAdminContentResponseAppearanceCaptionColorRegExp).optional(),
+  "metaColor": zod.string().regex(getAdminContentResponseAppearanceMetaColorRegExp).optional(),
+  "linkHoverColor": zod.string().regex(getAdminContentResponseAppearanceLinkHoverColorRegExp).optional(),
+  "borderColor": zod.string().regex(getAdminContentResponseAppearanceBorderColorRegExp).optional(),
+  "footerColor": zod.string().regex(getAdminContentResponseAppearanceFooterColorRegExp).optional(),
+  "textAlign": zod.enum(['left', 'center', 'right']).optional(),
+  "pageMargin": zod.number().int().min(getAdminContentResponseAppearancePageMarginMin).max(getAdminContentResponseAppearancePageMarginMax).optional(),
+  "sectionSpacing": zod.number().int().min(getAdminContentResponseAppearanceSectionSpacingMin).max(getAdminContentResponseAppearanceSectionSpacingMax).optional(),
+  "elementSpacing": zod.number().int().min(getAdminContentResponseAppearanceElementSpacingMin).max(getAdminContentResponseAppearanceElementSpacingMax).optional(),
+  "imageMaxWidth": zod.number().int().min(getAdminContentResponseAppearanceImageMaxWidthMin).max(getAdminContentResponseAppearanceImageMaxWidthMax).optional(),
+  "cornerRadius": zod.number().int().min(getAdminContentResponseAppearanceCornerRadiusMin).max(getAdminContentResponseAppearanceCornerRadiusMax).optional(),
+  "linkStyle": zod.enum(['underline', 'plain']).optional()
 }),
   "posts": zod.array(zod.object({
   "id": zod.string(),
@@ -149,7 +449,28 @@ export const GetAdminContentResponse = zod.object({
   "date": zod.string(),
   "description": zod.string(),
   "body": zod.string(),
-  "published": zod.boolean()
+  "imageUrl": zod.string().optional(),
+  "published": zod.boolean(),
+  "subtitle": zod.string().optional(),
+  "author": zod.string().optional(),
+  "categories": zod.array(zod.string()).optional(),
+  "tags": zod.array(zod.string()).optional(),
+  "showCoverOnPage": zod.boolean().optional(),
+  "cardShowTitle": zod.boolean().optional(),
+  "cardShowImage": zod.boolean().optional(),
+  "cardShowDescription": zod.boolean().optional(),
+  "cardShowDate": zod.boolean().optional(),
+  "blocks": zod.array(zod.object({
+  "id": zod.string(),
+  "type": zod.enum(['paragraph', 'heading', 'quote', 'divider', 'list', 'image']),
+  "text": zod.string().optional(),
+  "level": zod.number().int().min(getAdminContentResponsePostsItemBlocksItemLevelMin).max(getAdminContentResponsePostsItemBlocksItemLevelMax).optional(),
+  "ordered": zod.boolean().optional(),
+  "items": zod.array(zod.string()).optional(),
+  "imageUrl": zod.string().optional(),
+  "alt": zod.string().optional(),
+  "caption": zod.string().optional()
+})).optional()
 })),
   "caseStudies": zod.array(zod.object({
   "id": zod.string(),
@@ -159,7 +480,28 @@ export const GetAdminContentResponse = zod.object({
   "description": zod.string(),
   "body": zod.string(),
   "href": zod.string(),
-  "published": zod.boolean()
+  "imageUrl": zod.string().optional(),
+  "published": zod.boolean(),
+  "subtitle": zod.string().optional(),
+  "author": zod.string().optional(),
+  "categories": zod.array(zod.string()).optional(),
+  "tags": zod.array(zod.string()).optional(),
+  "showCoverOnPage": zod.boolean().optional(),
+  "cardShowTitle": zod.boolean().optional(),
+  "cardShowImage": zod.boolean().optional(),
+  "cardShowDescription": zod.boolean().optional(),
+  "cardShowDate": zod.boolean().optional(),
+  "blocks": zod.array(zod.object({
+  "id": zod.string(),
+  "type": zod.enum(['paragraph', 'heading', 'quote', 'divider', 'list', 'image']),
+  "text": zod.string().optional(),
+  "level": zod.number().int().min(getAdminContentResponseCaseStudiesItemBlocksItemLevelMin).max(getAdminContentResponseCaseStudiesItemBlocksItemLevelMax).optional(),
+  "ordered": zod.boolean().optional(),
+  "items": zod.array(zod.string()).optional(),
+  "imageUrl": zod.string().optional(),
+  "alt": zod.string().optional(),
+  "caption": zod.string().optional()
+})).optional()
 })),
   "books": zod.array(zod.object({
   "id": zod.string(),
@@ -167,8 +509,56 @@ export const GetAdminContentResponse = zod.object({
   "author": zod.string(),
   "note": zod.string(),
   "href": zod.string(),
-  "published": zod.boolean()
-}))
+  "category": zod.string().max(getAdminContentResponseBooksItemCategoryMax).optional(),
+  "imageUrl": zod.string().optional(),
+  "published": zod.boolean(),
+  "kind": zod.string().max(getAdminContentResponseBooksItemKindMax).optional(),
+  "showAuthor": zod.boolean().optional(),
+  "showNote": zod.boolean().optional(),
+  "showImage": zod.boolean().optional()
+})),
+  "bookCategories": zod.array(zod.string().min(1).max(getAdminContentResponseBookCategoriesItemMax)).max(getAdminContentResponseBookCategoriesMax).optional(),
+  "sections": zod.array(zod.object({
+  "id": zod.string(),
+  "heading": zod.string().optional(),
+  "subtitle": zod.string().optional(),
+  "description": zod.string().optional(),
+  "body": zod.string().optional(),
+  "layout": zod.enum(['prose', 'split', 'compact', 'links']),
+  "hidden": zod.boolean(),
+  "entries": zod.array(zod.object({
+  "id": zod.string(),
+  "label": zod.string().optional(),
+  "text": zod.string(),
+  "href": zod.string().optional(),
+  "imageUrl": zod.string().optional(),
+  "hidden": zod.boolean().optional()
+})).optional()
+})).optional(),
+  "navigation": zod.array(zod.object({
+  "id": zod.string(),
+  "label": zod.string(),
+  "href": zod.string(),
+  "hidden": zod.boolean()
+})).optional(),
+  "contactSettings": zod.object({
+  "mode": zod.enum(['modal', 'mailto', 'url']),
+  "email": zod.string().optional(),
+  "url": zod.string().optional()
+}).optional(),
+  "bookGroups": zod.array(zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "hidden": zod.boolean()
+})).optional(),
+  "pageCopy": zod.object({
+  "blogTitle": zod.string().optional(),
+  "blogIntro": zod.string().optional(),
+  "booksTitle": zod.string().optional(),
+  "booksIntro": zod.string().optional(),
+  "studiesTitle": zod.string().optional(),
+  "studiesIntro": zod.string().optional()
+}).optional()
 })
 
 
@@ -177,6 +567,80 @@ export const GetAdminContentResponse = zod.object({
  */
 export const updateAdminContentBodyAppearanceContentWidthMin = 480;
 export const updateAdminContentBodyAppearanceContentWidthMax = 1000;
+
+export const updateAdminContentBodyAppearanceHeadingFontMax = 40;
+
+export const updateAdminContentBodyAppearanceBodyFontMax = 40;
+
+export const updateAdminContentBodyAppearanceHeadingSizeMin = 16;
+export const updateAdminContentBodyAppearanceHeadingSizeMax = 64;
+
+export const updateAdminContentBodyAppearanceBodySizeMin = 10;
+export const updateAdminContentBodyAppearanceBodySizeMax = 24;
+
+export const updateAdminContentBodyAppearanceHeadingColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const updateAdminContentBodyAppearanceLinkColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const updateAdminContentBodyAppearanceSectionHeadingFontMax = 40;
+
+export const updateAdminContentBodyAppearanceSubheadingFontMax = 40;
+
+export const updateAdminContentBodyAppearanceNavFontMax = 40;
+
+export const updateAdminContentBodyAppearanceCaptionFontMax = 40;
+
+export const updateAdminContentBodyAppearanceMetaFontMax = 40;
+
+export const updateAdminContentBodyAppearanceSectionHeadingSizeMin = 9;
+export const updateAdminContentBodyAppearanceSectionHeadingSizeMax = 48;
+
+export const updateAdminContentBodyAppearanceSubheadingSizeMin = 9;
+export const updateAdminContentBodyAppearanceSubheadingSizeMax = 48;
+
+export const updateAdminContentBodyAppearanceNavSizeMin = 9;
+export const updateAdminContentBodyAppearanceNavSizeMax = 32;
+
+export const updateAdminContentBodyAppearanceCaptionSizeMin = 9;
+export const updateAdminContentBodyAppearanceCaptionSizeMax = 28;
+
+export const updateAdminContentBodyAppearanceMetaSizeMin = 9;
+export const updateAdminContentBodyAppearanceMetaSizeMax = 28;
+
+export const updateAdminContentBodyAppearanceSectionHeadingColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const updateAdminContentBodyAppearanceSubheadingColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const updateAdminContentBodyAppearanceNavColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const updateAdminContentBodyAppearanceCaptionColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const updateAdminContentBodyAppearanceMetaColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const updateAdminContentBodyAppearanceLinkHoverColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const updateAdminContentBodyAppearanceBorderColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const updateAdminContentBodyAppearanceFooterColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const updateAdminContentBodyAppearancePageMarginMin = 12;
+export const updateAdminContentBodyAppearancePageMarginMax = 120;
+
+export const updateAdminContentBodyAppearanceSectionSpacingMin = 8;
+export const updateAdminContentBodyAppearanceSectionSpacingMax = 160;
+
+export const updateAdminContentBodyAppearanceElementSpacingMin = 0;
+export const updateAdminContentBodyAppearanceElementSpacingMax = 48;
+
+export const updateAdminContentBodyAppearanceImageMaxWidthMin = 40;
+export const updateAdminContentBodyAppearanceImageMaxWidthMax = 1000;
+
+export const updateAdminContentBodyAppearanceCornerRadiusMin = 0;
+export const updateAdminContentBodyAppearanceCornerRadiusMax = 24;
+
+export const updateAdminContentBodyPostsItemBlocksItemLevelMin = 2;
+export const updateAdminContentBodyPostsItemBlocksItemLevelMax = 4;
+
+export const updateAdminContentBodyCaseStudiesItemBlocksItemLevelMin = 2;
+export const updateAdminContentBodyCaseStudiesItemBlocksItemLevelMax = 4;
+
+export const updateAdminContentBodyBooksItemCategoryMax = 60;
+
+export const updateAdminContentBodyBooksItemKindMax = 40;
+
+export const updateAdminContentBodyBookCategoriesItemMax = 60;
+
+export const updateAdminContentBodyBookCategoriesMax = 30;
 
 
 
@@ -200,7 +664,38 @@ export const UpdateAdminContentBody = zod.object({
   "textColor": zod.string(),
   "accentColor": zod.string(),
   "font": zod.enum(['system', 'serif', 'mono']),
-  "contentWidth": zod.number().int().min(updateAdminContentBodyAppearanceContentWidthMin).max(updateAdminContentBodyAppearanceContentWidthMax)
+  "contentWidth": zod.number().int().min(updateAdminContentBodyAppearanceContentWidthMin).max(updateAdminContentBodyAppearanceContentWidthMax),
+  "headingFont": zod.string().max(updateAdminContentBodyAppearanceHeadingFontMax).optional(),
+  "bodyFont": zod.string().max(updateAdminContentBodyAppearanceBodyFontMax).optional(),
+  "headingSize": zod.number().int().min(updateAdminContentBodyAppearanceHeadingSizeMin).max(updateAdminContentBodyAppearanceHeadingSizeMax).optional(),
+  "bodySize": zod.number().int().min(updateAdminContentBodyAppearanceBodySizeMin).max(updateAdminContentBodyAppearanceBodySizeMax).optional(),
+  "headingColor": zod.string().regex(updateAdminContentBodyAppearanceHeadingColorRegExp).optional(),
+  "linkColor": zod.string().regex(updateAdminContentBodyAppearanceLinkColorRegExp).optional(),
+  "sectionHeadingFont": zod.string().max(updateAdminContentBodyAppearanceSectionHeadingFontMax).optional(),
+  "subheadingFont": zod.string().max(updateAdminContentBodyAppearanceSubheadingFontMax).optional(),
+  "navFont": zod.string().max(updateAdminContentBodyAppearanceNavFontMax).optional(),
+  "captionFont": zod.string().max(updateAdminContentBodyAppearanceCaptionFontMax).optional(),
+  "metaFont": zod.string().max(updateAdminContentBodyAppearanceMetaFontMax).optional(),
+  "sectionHeadingSize": zod.number().int().min(updateAdminContentBodyAppearanceSectionHeadingSizeMin).max(updateAdminContentBodyAppearanceSectionHeadingSizeMax).optional(),
+  "subheadingSize": zod.number().int().min(updateAdminContentBodyAppearanceSubheadingSizeMin).max(updateAdminContentBodyAppearanceSubheadingSizeMax).optional(),
+  "navSize": zod.number().int().min(updateAdminContentBodyAppearanceNavSizeMin).max(updateAdminContentBodyAppearanceNavSizeMax).optional(),
+  "captionSize": zod.number().int().min(updateAdminContentBodyAppearanceCaptionSizeMin).max(updateAdminContentBodyAppearanceCaptionSizeMax).optional(),
+  "metaSize": zod.number().int().min(updateAdminContentBodyAppearanceMetaSizeMin).max(updateAdminContentBodyAppearanceMetaSizeMax).optional(),
+  "sectionHeadingColor": zod.string().regex(updateAdminContentBodyAppearanceSectionHeadingColorRegExp).optional(),
+  "subheadingColor": zod.string().regex(updateAdminContentBodyAppearanceSubheadingColorRegExp).optional(),
+  "navColor": zod.string().regex(updateAdminContentBodyAppearanceNavColorRegExp).optional(),
+  "captionColor": zod.string().regex(updateAdminContentBodyAppearanceCaptionColorRegExp).optional(),
+  "metaColor": zod.string().regex(updateAdminContentBodyAppearanceMetaColorRegExp).optional(),
+  "linkHoverColor": zod.string().regex(updateAdminContentBodyAppearanceLinkHoverColorRegExp).optional(),
+  "borderColor": zod.string().regex(updateAdminContentBodyAppearanceBorderColorRegExp).optional(),
+  "footerColor": zod.string().regex(updateAdminContentBodyAppearanceFooterColorRegExp).optional(),
+  "textAlign": zod.enum(['left', 'center', 'right']).optional(),
+  "pageMargin": zod.number().int().min(updateAdminContentBodyAppearancePageMarginMin).max(updateAdminContentBodyAppearancePageMarginMax).optional(),
+  "sectionSpacing": zod.number().int().min(updateAdminContentBodyAppearanceSectionSpacingMin).max(updateAdminContentBodyAppearanceSectionSpacingMax).optional(),
+  "elementSpacing": zod.number().int().min(updateAdminContentBodyAppearanceElementSpacingMin).max(updateAdminContentBodyAppearanceElementSpacingMax).optional(),
+  "imageMaxWidth": zod.number().int().min(updateAdminContentBodyAppearanceImageMaxWidthMin).max(updateAdminContentBodyAppearanceImageMaxWidthMax).optional(),
+  "cornerRadius": zod.number().int().min(updateAdminContentBodyAppearanceCornerRadiusMin).max(updateAdminContentBodyAppearanceCornerRadiusMax).optional(),
+  "linkStyle": zod.enum(['underline', 'plain']).optional()
 }),
   "posts": zod.array(zod.object({
   "id": zod.string(),
@@ -209,7 +704,28 @@ export const UpdateAdminContentBody = zod.object({
   "date": zod.string(),
   "description": zod.string(),
   "body": zod.string(),
-  "published": zod.boolean()
+  "imageUrl": zod.string().optional(),
+  "published": zod.boolean(),
+  "subtitle": zod.string().optional(),
+  "author": zod.string().optional(),
+  "categories": zod.array(zod.string()).optional(),
+  "tags": zod.array(zod.string()).optional(),
+  "showCoverOnPage": zod.boolean().optional(),
+  "cardShowTitle": zod.boolean().optional(),
+  "cardShowImage": zod.boolean().optional(),
+  "cardShowDescription": zod.boolean().optional(),
+  "cardShowDate": zod.boolean().optional(),
+  "blocks": zod.array(zod.object({
+  "id": zod.string(),
+  "type": zod.enum(['paragraph', 'heading', 'quote', 'divider', 'list', 'image']),
+  "text": zod.string().optional(),
+  "level": zod.number().int().min(updateAdminContentBodyPostsItemBlocksItemLevelMin).max(updateAdminContentBodyPostsItemBlocksItemLevelMax).optional(),
+  "ordered": zod.boolean().optional(),
+  "items": zod.array(zod.string()).optional(),
+  "imageUrl": zod.string().optional(),
+  "alt": zod.string().optional(),
+  "caption": zod.string().optional()
+})).optional()
 })),
   "caseStudies": zod.array(zod.object({
   "id": zod.string(),
@@ -219,7 +735,28 @@ export const UpdateAdminContentBody = zod.object({
   "description": zod.string(),
   "body": zod.string(),
   "href": zod.string(),
-  "published": zod.boolean()
+  "imageUrl": zod.string().optional(),
+  "published": zod.boolean(),
+  "subtitle": zod.string().optional(),
+  "author": zod.string().optional(),
+  "categories": zod.array(zod.string()).optional(),
+  "tags": zod.array(zod.string()).optional(),
+  "showCoverOnPage": zod.boolean().optional(),
+  "cardShowTitle": zod.boolean().optional(),
+  "cardShowImage": zod.boolean().optional(),
+  "cardShowDescription": zod.boolean().optional(),
+  "cardShowDate": zod.boolean().optional(),
+  "blocks": zod.array(zod.object({
+  "id": zod.string(),
+  "type": zod.enum(['paragraph', 'heading', 'quote', 'divider', 'list', 'image']),
+  "text": zod.string().optional(),
+  "level": zod.number().int().min(updateAdminContentBodyCaseStudiesItemBlocksItemLevelMin).max(updateAdminContentBodyCaseStudiesItemBlocksItemLevelMax).optional(),
+  "ordered": zod.boolean().optional(),
+  "items": zod.array(zod.string()).optional(),
+  "imageUrl": zod.string().optional(),
+  "alt": zod.string().optional(),
+  "caption": zod.string().optional()
+})).optional()
 })),
   "books": zod.array(zod.object({
   "id": zod.string(),
@@ -227,12 +764,134 @@ export const UpdateAdminContentBody = zod.object({
   "author": zod.string(),
   "note": zod.string(),
   "href": zod.string(),
-  "published": zod.boolean()
-}))
+  "category": zod.string().max(updateAdminContentBodyBooksItemCategoryMax).optional(),
+  "imageUrl": zod.string().optional(),
+  "published": zod.boolean(),
+  "kind": zod.string().max(updateAdminContentBodyBooksItemKindMax).optional(),
+  "showAuthor": zod.boolean().optional(),
+  "showNote": zod.boolean().optional(),
+  "showImage": zod.boolean().optional()
+})),
+  "bookCategories": zod.array(zod.string().min(1).max(updateAdminContentBodyBookCategoriesItemMax)).max(updateAdminContentBodyBookCategoriesMax).optional(),
+  "sections": zod.array(zod.object({
+  "id": zod.string(),
+  "heading": zod.string().optional(),
+  "subtitle": zod.string().optional(),
+  "description": zod.string().optional(),
+  "body": zod.string().optional(),
+  "layout": zod.enum(['prose', 'split', 'compact', 'links']),
+  "hidden": zod.boolean(),
+  "entries": zod.array(zod.object({
+  "id": zod.string(),
+  "label": zod.string().optional(),
+  "text": zod.string(),
+  "href": zod.string().optional(),
+  "imageUrl": zod.string().optional(),
+  "hidden": zod.boolean().optional()
+})).optional()
+})).optional(),
+  "navigation": zod.array(zod.object({
+  "id": zod.string(),
+  "label": zod.string(),
+  "href": zod.string(),
+  "hidden": zod.boolean()
+})).optional(),
+  "contactSettings": zod.object({
+  "mode": zod.enum(['modal', 'mailto', 'url']),
+  "email": zod.string().optional(),
+  "url": zod.string().optional()
+}).optional(),
+  "bookGroups": zod.array(zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "hidden": zod.boolean()
+})).optional(),
+  "pageCopy": zod.object({
+  "blogTitle": zod.string().optional(),
+  "blogIntro": zod.string().optional(),
+  "booksTitle": zod.string().optional(),
+  "booksIntro": zod.string().optional(),
+  "studiesTitle": zod.string().optional(),
+  "studiesIntro": zod.string().optional()
+}).optional()
 })
 
 export const updateAdminContentResponseAppearanceContentWidthMin = 480;
 export const updateAdminContentResponseAppearanceContentWidthMax = 1000;
+
+export const updateAdminContentResponseAppearanceHeadingFontMax = 40;
+
+export const updateAdminContentResponseAppearanceBodyFontMax = 40;
+
+export const updateAdminContentResponseAppearanceHeadingSizeMin = 16;
+export const updateAdminContentResponseAppearanceHeadingSizeMax = 64;
+
+export const updateAdminContentResponseAppearanceBodySizeMin = 10;
+export const updateAdminContentResponseAppearanceBodySizeMax = 24;
+
+export const updateAdminContentResponseAppearanceHeadingColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const updateAdminContentResponseAppearanceLinkColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const updateAdminContentResponseAppearanceSectionHeadingFontMax = 40;
+
+export const updateAdminContentResponseAppearanceSubheadingFontMax = 40;
+
+export const updateAdminContentResponseAppearanceNavFontMax = 40;
+
+export const updateAdminContentResponseAppearanceCaptionFontMax = 40;
+
+export const updateAdminContentResponseAppearanceMetaFontMax = 40;
+
+export const updateAdminContentResponseAppearanceSectionHeadingSizeMin = 9;
+export const updateAdminContentResponseAppearanceSectionHeadingSizeMax = 48;
+
+export const updateAdminContentResponseAppearanceSubheadingSizeMin = 9;
+export const updateAdminContentResponseAppearanceSubheadingSizeMax = 48;
+
+export const updateAdminContentResponseAppearanceNavSizeMin = 9;
+export const updateAdminContentResponseAppearanceNavSizeMax = 32;
+
+export const updateAdminContentResponseAppearanceCaptionSizeMin = 9;
+export const updateAdminContentResponseAppearanceCaptionSizeMax = 28;
+
+export const updateAdminContentResponseAppearanceMetaSizeMin = 9;
+export const updateAdminContentResponseAppearanceMetaSizeMax = 28;
+
+export const updateAdminContentResponseAppearanceSectionHeadingColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const updateAdminContentResponseAppearanceSubheadingColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const updateAdminContentResponseAppearanceNavColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const updateAdminContentResponseAppearanceCaptionColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const updateAdminContentResponseAppearanceMetaColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const updateAdminContentResponseAppearanceLinkHoverColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const updateAdminContentResponseAppearanceBorderColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const updateAdminContentResponseAppearanceFooterColorRegExp = new RegExp('^#[0-9a-fA-F]{6}$');
+export const updateAdminContentResponseAppearancePageMarginMin = 12;
+export const updateAdminContentResponseAppearancePageMarginMax = 120;
+
+export const updateAdminContentResponseAppearanceSectionSpacingMin = 8;
+export const updateAdminContentResponseAppearanceSectionSpacingMax = 160;
+
+export const updateAdminContentResponseAppearanceElementSpacingMin = 0;
+export const updateAdminContentResponseAppearanceElementSpacingMax = 48;
+
+export const updateAdminContentResponseAppearanceImageMaxWidthMin = 40;
+export const updateAdminContentResponseAppearanceImageMaxWidthMax = 1000;
+
+export const updateAdminContentResponseAppearanceCornerRadiusMin = 0;
+export const updateAdminContentResponseAppearanceCornerRadiusMax = 24;
+
+export const updateAdminContentResponsePostsItemBlocksItemLevelMin = 2;
+export const updateAdminContentResponsePostsItemBlocksItemLevelMax = 4;
+
+export const updateAdminContentResponseCaseStudiesItemBlocksItemLevelMin = 2;
+export const updateAdminContentResponseCaseStudiesItemBlocksItemLevelMax = 4;
+
+export const updateAdminContentResponseBooksItemCategoryMax = 60;
+
+export const updateAdminContentResponseBooksItemKindMax = 40;
+
+export const updateAdminContentResponseBookCategoriesItemMax = 60;
+
+export const updateAdminContentResponseBookCategoriesMax = 30;
 
 
 
@@ -256,7 +915,38 @@ export const UpdateAdminContentResponse = zod.object({
   "textColor": zod.string(),
   "accentColor": zod.string(),
   "font": zod.enum(['system', 'serif', 'mono']),
-  "contentWidth": zod.number().int().min(updateAdminContentResponseAppearanceContentWidthMin).max(updateAdminContentResponseAppearanceContentWidthMax)
+  "contentWidth": zod.number().int().min(updateAdminContentResponseAppearanceContentWidthMin).max(updateAdminContentResponseAppearanceContentWidthMax),
+  "headingFont": zod.string().max(updateAdminContentResponseAppearanceHeadingFontMax).optional(),
+  "bodyFont": zod.string().max(updateAdminContentResponseAppearanceBodyFontMax).optional(),
+  "headingSize": zod.number().int().min(updateAdminContentResponseAppearanceHeadingSizeMin).max(updateAdminContentResponseAppearanceHeadingSizeMax).optional(),
+  "bodySize": zod.number().int().min(updateAdminContentResponseAppearanceBodySizeMin).max(updateAdminContentResponseAppearanceBodySizeMax).optional(),
+  "headingColor": zod.string().regex(updateAdminContentResponseAppearanceHeadingColorRegExp).optional(),
+  "linkColor": zod.string().regex(updateAdminContentResponseAppearanceLinkColorRegExp).optional(),
+  "sectionHeadingFont": zod.string().max(updateAdminContentResponseAppearanceSectionHeadingFontMax).optional(),
+  "subheadingFont": zod.string().max(updateAdminContentResponseAppearanceSubheadingFontMax).optional(),
+  "navFont": zod.string().max(updateAdminContentResponseAppearanceNavFontMax).optional(),
+  "captionFont": zod.string().max(updateAdminContentResponseAppearanceCaptionFontMax).optional(),
+  "metaFont": zod.string().max(updateAdminContentResponseAppearanceMetaFontMax).optional(),
+  "sectionHeadingSize": zod.number().int().min(updateAdminContentResponseAppearanceSectionHeadingSizeMin).max(updateAdminContentResponseAppearanceSectionHeadingSizeMax).optional(),
+  "subheadingSize": zod.number().int().min(updateAdminContentResponseAppearanceSubheadingSizeMin).max(updateAdminContentResponseAppearanceSubheadingSizeMax).optional(),
+  "navSize": zod.number().int().min(updateAdminContentResponseAppearanceNavSizeMin).max(updateAdminContentResponseAppearanceNavSizeMax).optional(),
+  "captionSize": zod.number().int().min(updateAdminContentResponseAppearanceCaptionSizeMin).max(updateAdminContentResponseAppearanceCaptionSizeMax).optional(),
+  "metaSize": zod.number().int().min(updateAdminContentResponseAppearanceMetaSizeMin).max(updateAdminContentResponseAppearanceMetaSizeMax).optional(),
+  "sectionHeadingColor": zod.string().regex(updateAdminContentResponseAppearanceSectionHeadingColorRegExp).optional(),
+  "subheadingColor": zod.string().regex(updateAdminContentResponseAppearanceSubheadingColorRegExp).optional(),
+  "navColor": zod.string().regex(updateAdminContentResponseAppearanceNavColorRegExp).optional(),
+  "captionColor": zod.string().regex(updateAdminContentResponseAppearanceCaptionColorRegExp).optional(),
+  "metaColor": zod.string().regex(updateAdminContentResponseAppearanceMetaColorRegExp).optional(),
+  "linkHoverColor": zod.string().regex(updateAdminContentResponseAppearanceLinkHoverColorRegExp).optional(),
+  "borderColor": zod.string().regex(updateAdminContentResponseAppearanceBorderColorRegExp).optional(),
+  "footerColor": zod.string().regex(updateAdminContentResponseAppearanceFooterColorRegExp).optional(),
+  "textAlign": zod.enum(['left', 'center', 'right']).optional(),
+  "pageMargin": zod.number().int().min(updateAdminContentResponseAppearancePageMarginMin).max(updateAdminContentResponseAppearancePageMarginMax).optional(),
+  "sectionSpacing": zod.number().int().min(updateAdminContentResponseAppearanceSectionSpacingMin).max(updateAdminContentResponseAppearanceSectionSpacingMax).optional(),
+  "elementSpacing": zod.number().int().min(updateAdminContentResponseAppearanceElementSpacingMin).max(updateAdminContentResponseAppearanceElementSpacingMax).optional(),
+  "imageMaxWidth": zod.number().int().min(updateAdminContentResponseAppearanceImageMaxWidthMin).max(updateAdminContentResponseAppearanceImageMaxWidthMax).optional(),
+  "cornerRadius": zod.number().int().min(updateAdminContentResponseAppearanceCornerRadiusMin).max(updateAdminContentResponseAppearanceCornerRadiusMax).optional(),
+  "linkStyle": zod.enum(['underline', 'plain']).optional()
 }),
   "posts": zod.array(zod.object({
   "id": zod.string(),
@@ -265,7 +955,28 @@ export const UpdateAdminContentResponse = zod.object({
   "date": zod.string(),
   "description": zod.string(),
   "body": zod.string(),
-  "published": zod.boolean()
+  "imageUrl": zod.string().optional(),
+  "published": zod.boolean(),
+  "subtitle": zod.string().optional(),
+  "author": zod.string().optional(),
+  "categories": zod.array(zod.string()).optional(),
+  "tags": zod.array(zod.string()).optional(),
+  "showCoverOnPage": zod.boolean().optional(),
+  "cardShowTitle": zod.boolean().optional(),
+  "cardShowImage": zod.boolean().optional(),
+  "cardShowDescription": zod.boolean().optional(),
+  "cardShowDate": zod.boolean().optional(),
+  "blocks": zod.array(zod.object({
+  "id": zod.string(),
+  "type": zod.enum(['paragraph', 'heading', 'quote', 'divider', 'list', 'image']),
+  "text": zod.string().optional(),
+  "level": zod.number().int().min(updateAdminContentResponsePostsItemBlocksItemLevelMin).max(updateAdminContentResponsePostsItemBlocksItemLevelMax).optional(),
+  "ordered": zod.boolean().optional(),
+  "items": zod.array(zod.string()).optional(),
+  "imageUrl": zod.string().optional(),
+  "alt": zod.string().optional(),
+  "caption": zod.string().optional()
+})).optional()
 })),
   "caseStudies": zod.array(zod.object({
   "id": zod.string(),
@@ -275,7 +986,28 @@ export const UpdateAdminContentResponse = zod.object({
   "description": zod.string(),
   "body": zod.string(),
   "href": zod.string(),
-  "published": zod.boolean()
+  "imageUrl": zod.string().optional(),
+  "published": zod.boolean(),
+  "subtitle": zod.string().optional(),
+  "author": zod.string().optional(),
+  "categories": zod.array(zod.string()).optional(),
+  "tags": zod.array(zod.string()).optional(),
+  "showCoverOnPage": zod.boolean().optional(),
+  "cardShowTitle": zod.boolean().optional(),
+  "cardShowImage": zod.boolean().optional(),
+  "cardShowDescription": zod.boolean().optional(),
+  "cardShowDate": zod.boolean().optional(),
+  "blocks": zod.array(zod.object({
+  "id": zod.string(),
+  "type": zod.enum(['paragraph', 'heading', 'quote', 'divider', 'list', 'image']),
+  "text": zod.string().optional(),
+  "level": zod.number().int().min(updateAdminContentResponseCaseStudiesItemBlocksItemLevelMin).max(updateAdminContentResponseCaseStudiesItemBlocksItemLevelMax).optional(),
+  "ordered": zod.boolean().optional(),
+  "items": zod.array(zod.string()).optional(),
+  "imageUrl": zod.string().optional(),
+  "alt": zod.string().optional(),
+  "caption": zod.string().optional()
+})).optional()
 })),
   "books": zod.array(zod.object({
   "id": zod.string(),
@@ -283,8 +1015,107 @@ export const UpdateAdminContentResponse = zod.object({
   "author": zod.string(),
   "note": zod.string(),
   "href": zod.string(),
-  "published": zod.boolean()
-}))
+  "category": zod.string().max(updateAdminContentResponseBooksItemCategoryMax).optional(),
+  "imageUrl": zod.string().optional(),
+  "published": zod.boolean(),
+  "kind": zod.string().max(updateAdminContentResponseBooksItemKindMax).optional(),
+  "showAuthor": zod.boolean().optional(),
+  "showNote": zod.boolean().optional(),
+  "showImage": zod.boolean().optional()
+})),
+  "bookCategories": zod.array(zod.string().min(1).max(updateAdminContentResponseBookCategoriesItemMax)).max(updateAdminContentResponseBookCategoriesMax).optional(),
+  "sections": zod.array(zod.object({
+  "id": zod.string(),
+  "heading": zod.string().optional(),
+  "subtitle": zod.string().optional(),
+  "description": zod.string().optional(),
+  "body": zod.string().optional(),
+  "layout": zod.enum(['prose', 'split', 'compact', 'links']),
+  "hidden": zod.boolean(),
+  "entries": zod.array(zod.object({
+  "id": zod.string(),
+  "label": zod.string().optional(),
+  "text": zod.string(),
+  "href": zod.string().optional(),
+  "imageUrl": zod.string().optional(),
+  "hidden": zod.boolean().optional()
+})).optional()
+})).optional(),
+  "navigation": zod.array(zod.object({
+  "id": zod.string(),
+  "label": zod.string(),
+  "href": zod.string(),
+  "hidden": zod.boolean()
+})).optional(),
+  "contactSettings": zod.object({
+  "mode": zod.enum(['modal', 'mailto', 'url']),
+  "email": zod.string().optional(),
+  "url": zod.string().optional()
+}).optional(),
+  "bookGroups": zod.array(zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "hidden": zod.boolean()
+})).optional(),
+  "pageCopy": zod.object({
+  "blogTitle": zod.string().optional(),
+  "blogIntro": zod.string().optional(),
+  "booksTitle": zod.string().optional(),
+  "booksIntro": zod.string().optional(),
+  "studiesTitle": zod.string().optional(),
+  "studiesIntro": zod.string().optional()
+}).optional()
+})
+
+
+/**
+ * @summary Send a message to the site owner
+ */
+export const sendContactMessageBodyNameMax = 100;
+
+export const sendContactMessageBodyEmailMax = 200;
+
+export const sendContactMessageBodyMessageMin = 10;
+export const sendContactMessageBodyMessageMax = 5000;
+
+
+
+export const SendContactMessageBody = zod.object({
+  "name": zod.string().min(1).max(sendContactMessageBodyNameMax),
+  "email": zod.string().email().max(sendContactMessageBodyEmailMax),
+  "message": zod.string().min(sendContactMessageBodyMessageMin).max(sendContactMessageBodyMessageMax),
+  "website": zod.string().optional().describe('Honeypot field. Must be empty.')
+})
+
+export const SendContactMessageResponse = zod.object({
+  "ok": zod.boolean()
+})
+
+
+/**
+ * @summary List received contact messages
+ */
+export const ListContactMessagesResponseItem = zod.object({
+  "id": zod.number().int(),
+  "name": zod.string(),
+  "email": zod.string(),
+  "message": zod.string(),
+  "createdAt": zod.string(),
+  "emailed": zod.boolean(),
+  "emailError": zod.string().nullable()
+})
+export const ListContactMessagesResponse = zod.array(ListContactMessagesResponseItem)
+
+
+/**
+ * @summary Delete a received contact message
+ */
+export const DeleteContactMessageParams = zod.object({
+  "id": zod.coerce.number().int()
+})
+
+export const DeleteContactMessageResponse = zod.object({
+  "ok": zod.boolean()
 })
 
 

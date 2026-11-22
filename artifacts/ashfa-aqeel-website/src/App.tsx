@@ -2,8 +2,10 @@ import { Route, Switch, Router as WouterRouter } from 'wouter';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SiteLayout } from '@/components/site-layout';
 import Blog from '@/pages/blog';
+import BlogPost from '@/pages/blog-post';
 import Books from '@/pages/books';
 import CaseStudy from '@/pages/case-study';
+import CaseStudyDetail from '@/pages/case-study-detail';
 import Home from '@/pages/home';
 import NotFound from '@/pages/not-found';
 import Admin from '@/pages/admin';
@@ -17,7 +19,9 @@ function Router() {
     <Switch>
       <Route path="/admin" component={Admin} />
       <Route path="/"><SiteLayout><Home /></SiteLayout></Route>
+      <Route path="/blog/:slug"><SiteLayout><BlogPost /></SiteLayout></Route>
       <Route path="/blog"><SiteLayout><Blog /></SiteLayout></Route>
+      <Route path="/case-study/:slug"><SiteLayout><CaseStudyDetail /></SiteLayout></Route>
       <Route path="/case-study"><SiteLayout><CaseStudy /></SiteLayout></Route>
       <Route path="/books"><SiteLayout><Books /></SiteLayout></Route>
       <Route><SiteLayout><NotFound /></SiteLayout></Route>

@@ -5,6 +5,7 @@
  * Personal website content and private editing API
  * OpenAPI spec version: 0.1.0
  */
+import type { ContentBlock } from './contentBlock';
 
 export interface BlogPost {
   id: string;
@@ -13,5 +14,16 @@ export interface BlogPost {
   date: string;
   description: string;
   body: string;
+  imageUrl?: string;
   published: boolean;
+  subtitle?: string;
+  author?: string;
+  categories?: string[];
+  tags?: string[];
+  showCoverOnPage?: boolean;
+  cardShowTitle?: boolean;
+  cardShowImage?: boolean;
+  cardShowDescription?: boolean;
+  cardShowDate?: boolean;
+  blocks?: ContentBlock[];
 }
