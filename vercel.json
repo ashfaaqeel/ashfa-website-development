@@ -5,7 +5,9 @@
     { "source": "/api", "destination": "/api?__route=/" },
     { "source": "/api/:path*", "destination": "/api?__route=/:path*" },
     { "source": "/blog", "destination": "/index.html" },
+    { "source": "/blog/:slug", "destination": "/index.html" },
     { "source": "/case-study", "destination": "/index.html" },
+    { "source": "/case-study/:slug", "destination": "/index.html" },
     { "source": "/books", "destination": "/index.html" },
     { "source": "/admin", "destination": "/index.html" }
   ]
