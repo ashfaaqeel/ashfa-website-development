@@ -1,8 +1,8 @@
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import cookieParser from "cookie-parser";
-import pinoHttp from "pino-http";
-import router from "./routes";
-import { logger } from "./lib/logger";
+import { pinoHttp } from "pino-http";
+import router from "./routes/index.js";
+import { logger } from "./lib/logger.js";
 
 const app: Express = express();
 // One proxy hop (Replit / Vercel) so req.ip is the real visitor, used for rate limits.

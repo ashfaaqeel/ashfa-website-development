@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import express, { Router, type IRouter } from "express";
 import { eq } from "drizzle-orm";
 import { db, uploadedImagesTable } from "@workspace/db";
-import { requireAdmin } from "./auth";
-import { logger } from "../lib/logger";
+import { requireAdmin } from "./auth.js";
+import { logger } from "../lib/logger.js";
 
 const router: IRouter = Router();
 

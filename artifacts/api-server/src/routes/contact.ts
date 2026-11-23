@@ -8,9 +8,9 @@ import {
   DeleteContactMessageResponse,
 } from "@workspace/api-zod";
 import { contactMessagesTable, db } from "@workspace/db";
-import { requireAdmin } from "./auth";
-import { sendContactEmail } from "../lib/email";
-import { logger } from "../lib/logger";
+import { requireAdmin } from "./auth.js";
+import { sendContactEmail } from "../lib/email.js";
+import { logger } from "../lib/logger.js";
 
 const router: IRouter = Router();
 const WINDOW_MS = 60 * 60 * 1000;

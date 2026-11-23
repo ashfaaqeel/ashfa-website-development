@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import app from "../artifacts/api-server/src/app";
+import app from "../artifacts/api-server/src/app.js";
 
 type VercelRequest = IncomingMessage & {
   url?: string;

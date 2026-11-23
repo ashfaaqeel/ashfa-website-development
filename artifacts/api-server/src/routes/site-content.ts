@@ -8,8 +8,8 @@ import {
   type SiteContent,
 } from "@workspace/api-zod";
 import { db, siteContentTable, uploadedImagesTable } from "@workspace/db";
-import { logger } from "../lib/logger";
-import { requireAdmin } from "./auth";
+import { logger } from "../lib/logger.js";
+import { requireAdmin } from "./auth.js";
 
 const router: IRouter = Router();
 
