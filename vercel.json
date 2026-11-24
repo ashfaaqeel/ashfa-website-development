@@ -1,5 +1,5 @@
 {
-  "buildCommand": "pnpm --filter @workspace/ashfa-aqeel-website run build",
+  "buildCommand": "pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/ashfa-aqeel-website run build",
   "outputDirectory": "artifacts/ashfa-aqeel-website/dist/public",
   "rewrites": [
     { "source": "/api", "destination": "/api?__route=/" },
